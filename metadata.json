@@ -1,0 +1,6 @@
+{
+  "name": "TaleemCloud - Multi-Tenant School Management SaaS",
+  "description": "Multi-tenant School Management SaaS for schools, academies, and tuition centers in Pakistan with portals for admins, teachers, parents, students, and accountants.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
