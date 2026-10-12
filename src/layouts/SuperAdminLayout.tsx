@@ -43,7 +43,7 @@ export const SuperAdminLayout: React.FC = () => {
         {/* Mobile Backdrop */}
         {sidebarOpen && (
           <div
-            className="fixed inset-0 z-40 bg-black/70 md:hidden backdrop-blur-xs"
+            className="fixed inset-0 z-40 bg-black/70 md:hidden"
             onClick={() => setSidebarOpen(false)}
           />
         )}

@@ -501,6 +501,14 @@ export const homeworkService = {
     MockStorageAdapter.setHomework(list);
     return created;
   },
+  update(id: string, updates: Partial<Homework>): Homework {
+    const list = MockStorageAdapter.getHomework();
+    const idx = list.findIndex(h => h.id === id);
+    if (idx === -1) throw new Error('Homework not found');
+    list[idx] = { ...list[idx], ...updates };
+    MockStorageAdapter.setHomework(list);
+    return list[idx];
+  },
   delete(id: string): void {
     const list = MockStorageAdapter.getHomework().filter(h => h.id !== id);
     MockStorageAdapter.setHomework(list);

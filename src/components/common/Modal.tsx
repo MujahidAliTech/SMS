@@ -1,4 +1,5 @@
 import React, { ReactNode, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 
 interface ModalProps {
@@ -43,38 +44,47 @@ export const Modal: React.FC<ModalProps> = ({
     '4xl': 'max-w-4xl'
   }[maxWidth];
 
-  return (
-    <div className="fixed inset-0 z-50 overflow-y-auto no-print">
-      {/* Backdrop */}
+  const modalElement = (
+    <div 
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 overflow-y-auto no-print"
+      role="dialog"
+      aria-modal="true"
+    >
+      {/* Backdrop: Independent dark overlay without backdrop-blur that caused GPU compositor blur leakage */}
       <div 
-        className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs transition-opacity" 
+        className="fixed inset-0 bg-slate-900/60 transition-opacity" 
+        aria-hidden="true"
         onClick={onClose} 
       />
 
-      <div className="flex min-h-full items-center justify-center p-3 text-center sm:p-4">
-        <div 
-          className={`w-full ${maxWidthClass} transform overflow-hidden rounded-xl bg-white text-left align-middle shadow-2xl transition-all border border-slate-200`}
-        >
-          {/* Header */}
-          <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4 bg-slate-50/50">
-            <div>
-              <h3 className="text-base font-semibold text-slate-800 leading-snug">{title}</h3>
-              {subtitle && <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>}
-            </div>
-            <button
-              onClick={onClose}
-              className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition"
-            >
-              <X className="h-5 w-5" />
-            </button>
+      {/* Dialog: Explicit relative z-10 container positioned strictly above backdrop */}
+      <div 
+        className={`relative z-10 w-full ${maxWidthClass} my-8 overflow-hidden rounded-xl bg-white text-left align-middle shadow-2xl border border-slate-200`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4 bg-slate-50/50">
+          <div>
+            <h3 className="text-base font-semibold text-slate-800 leading-snug">{title}</h3>
+            {subtitle && <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>}
           </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition"
+            aria-label="Close modal"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
 
-          {/* Body */}
-          <div className="px-6 py-5 max-h-[80vh] overflow-y-auto">
-            {children}
-          </div>
+        {/* Body */}
+        <div className="px-6 py-5 max-h-[80vh] overflow-y-auto text-slate-800">
+          {children}
         </div>
       </div>
     </div>
   );
+
+  return typeof document !== 'undefined' ? createPortal(modalElement, document.body) : modalElement;
 };

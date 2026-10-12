@@ -73,7 +73,7 @@ export const SchoolAdminLayout: React.FC = () => {
         {/* Mobile Backdrop */}
         {sidebarOpen && (
           <div
-            className="fixed inset-0 z-40 bg-slate-900/60 md:hidden backdrop-blur-xs"
+            className="fixed inset-0 z-40 bg-slate-900/60 md:hidden"
             onClick={() => setSidebarOpen(false)}
           />
         )}

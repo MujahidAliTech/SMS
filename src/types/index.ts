@@ -212,6 +212,7 @@ export interface SubjectMarks {
   obtainedMarks: number;
   passingMarks: number;
   grade: string;
+  remarks?: string;
 }
 
 export interface StudentResult {
