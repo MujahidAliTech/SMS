@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { studentService, classService, parentService, exportService, feeService, examService, attendanceService } from '../../services';
 import { Student } from '../../types';
@@ -75,6 +75,10 @@ export const StudentsListPage: React.FC = () => {
   const refreshList = () => {
     setStudents(studentService.getAll(currentTenant.id));
   };
+
+  useEffect(() => {
+    refreshList();
+  }, [currentTenant.id]);
 
   const filteredStudents = students.filter(s => {
     const matchesSearch = s.name.toLowerCase().includes(search.toLowerCase()) ||
