@@ -36,7 +36,12 @@ export const SchoolAdminLayout: React.FC = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
-  const { currentTenant, currentUser, switchRole } = useApp();
+  const { currentTenant, currentUser, switchRole, logout } = useApp();
+
+  const handleLogout = async () => {
+    await logout();
+    navigate('/login');
+  };
 
   const menuItems = [
     { label: 'Dashboard', path: '/school/dashboard', icon: LayoutDashboard },
@@ -58,11 +63,6 @@ export const SchoolAdminLayout: React.FC = () => {
     { label: 'Subscription Plan', path: '/school/subscription', icon: Award },
     { label: 'School Settings', path: '/school/settings', icon: Settings }
   ];
-
-  const handleLogout = () => {
-    switchRole('school_admin');
-    navigate('/login');
-  };
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-100 font-sans text-slate-800">

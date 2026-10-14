@@ -23,7 +23,12 @@ export const SuperAdminLayout: React.FC = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
-  const { currentUser, switchRole } = useApp();
+  const { currentUser, switchRole, logout } = useApp();
+
+  const handleLogout = async () => {
+    await logout();
+    navigate('/login');
+  };
 
   const superAdminLinks = [
     { label: 'Platform Overview', path: '/super-admin/dashboard', icon: TrendingUp },
@@ -144,6 +149,14 @@ export const SuperAdminLayout: React.FC = () => {
                 className="text-xs font-semibold px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition"
               >
                 Switch to School ERP
+              </button>
+              <button
+                onClick={handleLogout}
+                className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg transition"
+                title="Sign out of Super Admin"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Sign Out</span>
               </button>
             </div>
           </header>

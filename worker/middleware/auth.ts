@@ -33,6 +33,41 @@ export function extractToken(request: Request): string | null {
 }
 
 /**
+ * Validates CSRF for state-changing requests when using cookie-based authentication.
+ */
+export function validateCsrf(request: Request): Response | null {
+  const method = request.method;
+  if (['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+    return null;
+  }
+
+  // If request uses Authorization Bearer, CSRF is not applicable
+  const authHeader = request.headers.get('Authorization');
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    return null;
+  }
+
+  const origin = request.headers.get('Origin');
+  if (origin) {
+    try {
+      const originHost = new URL(origin).host;
+      const requestHost = new URL(request.url).host;
+      if (
+        originHost !== requestHost &&
+        !originHost.includes('localhost') &&
+        !originHost.includes('127.0.0.1')
+      ) {
+        return errorResponse('CSRF violation: Cross-origin state mutation rejected', 403);
+      }
+    } catch {
+      return errorResponse('CSRF violation: Malformed Origin header', 403);
+    }
+  }
+
+  return null;
+}
+
+/**
  * Authenticates request by resolving token hash in D1 user_sessions table.
  * Crucially derives the authorized tenant strictly from the server-side database.
  */
@@ -40,6 +75,12 @@ export async function authenticateRequest(
   request: Request,
   env: Env
 ): Promise<{ auth: AuthContext | null; error?: Response }> {
+  // Check CSRF protection for cookie-based mutative operations
+  const csrfError = validateCsrf(request);
+  if (csrfError) {
+    return { auth: null, error: csrfError };
+  }
+
   const token = extractToken(request);
   if (!token) {
     return { auth: null, error: errorResponse('Authentication required: Missing session token', 401) };

@@ -11,7 +11,7 @@ export async function handleHealthCheck(env: Env): Promise<Response> {
   let dbLatencyMs = 0;
 
   try {
-    const dbTest = await env.DB.prepare('SELECT 1 as alive, datetime("now") as db_time').first<{
+    const dbTest = await env.DB.prepare("SELECT 1 as alive, datetime('now') as db_time").first<{
       alive: number;
       db_time: string;
     }>();
@@ -43,9 +43,9 @@ export async function handleHealthCheck(env: Env): Promise<Response> {
 
 export function handleVersion(): Response {
   return jsonResponse({
-    version: '1.0.0',
+    version: '1.1.0',
     apiVersion: 'v1',
-    stage: 'Stage 4A (Backend Foundation & D1 Schema)',
+    stage: 'Stage 4B (Connected Auth & Classes D1 Migration)',
     appName: 'TaleemCloud Multi-Tenant School SaaS',
     author: 'TaleemCloud Core Platform Team'
   });

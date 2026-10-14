@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useApp } from '../../context/AppContext';
 import { classService, subjectService, teacherStaffService, studentService } from '../../services';
+import { classApiAdapter } from '../../services/dataAdapter';
 import { SchoolClass, Subject, Student } from '../../types';
 import { Modal } from '../../components/common/Modal';
 import { ConfirmModal } from '../../components/common/ConfirmModal';
@@ -19,12 +20,19 @@ import {
   CheckCircle2,
   GraduationCap,
   Sparkles,
-  AlertCircle
+  AlertCircle,
+  Database,
+  Loader2,
+  RefreshCw
 } from 'lucide-react';
 
 export const ClassesSectionsListPage: React.FC = () => {
-  const { currentTenant, toast } = useApp();
+  const { currentTenant, storageMode, setStorageMode, toast } = useApp();
   const [classes, setClasses] = useState<SchoolClass[]>(() => classService.getAll(currentTenant.id));
+  const [isLoading, setIsLoading] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [apiError, setApiError] = useState<string | null>(null);
+
   const students = studentService.getAll(currentTenant.id);
   const teachers = teacherStaffService.getAll(currentTenant.id);
 
@@ -48,8 +56,28 @@ export const ClassesSectionsListPage: React.FC = () => {
     monthlyTuitionFee: 4500
   });
 
+  const loadClasses = useCallback(async () => {
+    setIsLoading(true);
+    setApiError(null);
+    try {
+      const data = await classApiAdapter.getClasses(currentTenant.id, storageMode);
+      setClasses(data);
+    } catch (err) {
+      console.error('Failed to load classes:', err);
+      setApiError((err as Error).message || 'Failed to load classes from server');
+      // If remote failed, fallback to local so the UI is not empty, but display error
+      setClasses(classService.getAll(currentTenant.id));
+    } finally {
+      setIsLoading(false);
+    }
+  }, [currentTenant.id, storageMode]);
+
+  useEffect(() => {
+    loadClasses();
+  }, [loadClasses]);
+
   const refreshList = () => {
-    setClasses(classService.getAll(currentTenant.id));
+    loadClasses();
   };
 
   const filteredClasses = classes.filter(cls =>
@@ -61,6 +89,7 @@ export const ClassesSectionsListPage: React.FC = () => {
   const handleOpenAdd = () => {
     setEditingClass(null);
     setValidationErrors([]);
+    setApiError(null);
     setFormData({
       name: '',
       gradeNumeric: classes.length > 0 ? Math.max(...classes.map(c => c.gradeNumeric)) + 1 : 1,
@@ -75,6 +104,7 @@ export const ClassesSectionsListPage: React.FC = () => {
   const handleOpenEdit = (cls: SchoolClass) => {
     setEditingClass(cls);
     setValidationErrors([]);
+    setApiError(null);
     setFormData({
       name: cls.name,
       gradeNumeric: cls.gradeNumeric,
@@ -96,46 +126,75 @@ export const ClassesSectionsListPage: React.FC = () => {
     return errors.length === 0;
   };
 
-  const handleSaveClass = (e: React.FormEvent) => {
+  const handleSaveClass = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!validateForm()) return;
 
     const sectionsArray = formData.sections.split(',').map(s => s.trim()).filter(Boolean);
+    setIsSaving(true);
+    setApiError(null);
 
-    if (editingClass) {
-      classService.update(editingClass.id, {
-        name: formData.name.trim(),
-        gradeNumeric: Number(formData.gradeNumeric),
-        sections: sectionsArray,
-        classTeacherName: formData.classTeacherName.trim(),
-        capacity: Number(formData.capacity),
-        monthlyTuitionFee: Number(formData.monthlyTuitionFee)
-      });
-      toast(`Class ${formData.name} updated successfully`, 'success');
-    } else {
-      classService.create({
-        tenantId: currentTenant.id,
-        name: formData.name.trim(),
-        gradeNumeric: Number(formData.gradeNumeric),
-        sections: sectionsArray,
-        classTeacherName: formData.classTeacherName.trim(),
-        capacity: Number(formData.capacity),
-        totalStudents: 0,
-        monthlyTuitionFee: Number(formData.monthlyTuitionFee)
-      });
-      toast(`Class ${formData.name} created successfully`, 'success');
+    try {
+      if (editingClass) {
+        await classApiAdapter.updateClass(
+          editingClass.id,
+          {
+            name: formData.name.trim(),
+            gradeNumeric: Number(formData.gradeNumeric),
+            sections: sectionsArray,
+            classTeacherName: formData.classTeacherName.trim(),
+            capacity: Number(formData.capacity),
+            monthlyTuitionFee: Number(formData.monthlyTuitionFee)
+          },
+          currentTenant.id,
+          storageMode
+        );
+        toast(`Class ${formData.name} updated successfully`, 'success');
+      } else {
+        await classApiAdapter.createClass(
+          {
+            tenantId: currentTenant.id,
+            name: formData.name.trim(),
+            gradeNumeric: Number(formData.gradeNumeric),
+            sections: sectionsArray,
+            classTeacherName: formData.classTeacherName.trim(),
+            capacity: Number(formData.capacity),
+            totalStudents: 0,
+            monthlyTuitionFee: Number(formData.monthlyTuitionFee)
+          },
+          storageMode
+        );
+        toast(`Class ${formData.name} created successfully`, 'success');
+      }
+
+      await loadClasses();
+      setIsAddEditModalOpen(false);
+    } catch (err) {
+      setApiError((err as Error).message);
+    } finally {
+      setIsSaving(false);
     }
-
-    refreshList();
-    setIsAddEditModalOpen(false);
   };
 
-  const handleConfirmDelete = () => {
+  const handleConfirmDelete = async () => {
     if (!classToDelete) return;
-    classService.delete(classToDelete.id);
-    refreshList();
-    toast(`Class ${classToDelete.name} deleted`, 'info');
-    setClassToDelete(null);
+    setIsSaving(true);
+    setApiError(null);
+
+    try {
+      await classApiAdapter.deleteClass(classToDelete.id, currentTenant.id, storageMode);
+      toast(`Class ${classToDelete.name} deleted successfully`, 'info');
+      setClassToDelete(null);
+      await loadClasses();
+    } catch (err) {
+      // Relational error or failure (e.g. students enrolled)
+      const msg = (err as Error).message;
+      setApiError(msg);
+      toast(`Action blocked: ${msg}`, 'error');
+      setClassToDelete(null);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -143,20 +202,62 @@ export const ClassesSectionsListPage: React.FC = () => {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-bold text-slate-900">Classes & Sections Management</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-xl font-bold text-slate-900">Classes & Sections Management</h1>
+            <span
+              className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${
+                storageMode === 'cloudflare_d1'
+                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                  : 'bg-amber-50 text-amber-800 border-amber-200'
+              }`}
+            >
+              <Database className="w-3 h-3" />
+              <span>{storageMode === 'cloudflare_d1' ? 'Cloudflare D1 Mode' : 'Local Demo Mode'}</span>
+            </span>
+          </div>
           <p className="text-xs text-slate-500">
             Configure academic grades, section capacities, incharge faculty, and tuition rates ({classes.length} Classes)
           </p>
         </div>
 
-        <button
-          onClick={handleOpenAdd}
-          className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-blue-700 hover:bg-blue-800 text-white text-xs font-bold rounded-lg shadow-xs transition"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Add New Class</span>
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => loadClasses()}
+            disabled={isLoading}
+            className="p-2 text-slate-600 hover:text-slate-900 bg-white border border-slate-200 rounded-lg shadow-xs transition hover:bg-slate-50"
+            title="Refresh classes list"
+          >
+            <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin text-blue-600' : ''}`} />
+          </button>
+
+          <button
+            onClick={handleOpenAdd}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-blue-700 hover:bg-blue-800 text-white text-xs font-bold rounded-lg shadow-xs transition"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Add New Class</span>
+          </button>
+        </div>
       </div>
+
+      {/* Actionable Error Alert if Remote Error occurs */}
+      {apiError && (
+        <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-900 text-xs flex items-start justify-between gap-3 animate-fadeIn">
+          <div className="flex items-start gap-2.5">
+            <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+            <div>
+              <strong className="block font-bold">Relational / API Constraint Error:</strong>
+              <span className="leading-relaxed">{apiError}</span>
+            </div>
+          </div>
+          <button
+            onClick={() => setApiError(null)}
+            className="text-xs text-rose-600 hover:text-rose-800 font-bold ml-2"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* Search Bar */}
       <div className="bg-white border border-slate-200/80 p-3 rounded-xl flex items-center justify-between shadow-xs">

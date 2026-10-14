@@ -21,7 +21,12 @@ export const PortalLayout: React.FC<{
 }> = ({ portalType }) => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { currentTenant, currentUser, switchRole } = useApp();
+  const { currentTenant, currentUser, switchRole, logout } = useApp();
+
+  const handleLogout = async () => {
+    await logout();
+    navigate('/login');
+  };
 
   const getPortalNavItems = () => {
     if (portalType === 'teacher') {
@@ -120,6 +125,14 @@ export const PortalLayout: React.FC<{
               title="Return to School Admin ERP"
             >
               Exit Portal
+            </button>
+            <button
+              onClick={handleLogout}
+              className="text-xs px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-lg font-medium transition flex items-center gap-1"
+              title="Sign Out"
+            >
+              <LogOut className="w-3 h-3" />
+              <span className="hidden sm:inline">Sign Out</span>
             </button>
           </div>
         </div>

@@ -8,7 +8,13 @@ import { jsonResponse, errorResponse } from './utils/response';
 import { handleHealthCheck, handleVersion } from './routes/health';
 import { handleLogin, handleLogout, handleGetMe } from './routes/auth';
 import { handleGetPublicTenant, handleGetCurrentTenant, handleListTenants } from './routes/tenants';
-import { handleGetClasses, handleCreateClass } from './routes/classes';
+import {
+  handleGetClasses,
+  handleGetClassById,
+  handleCreateClass,
+  handleUpdateClass,
+  handleDeleteClass
+} from './routes/classes';
 
 function handleCors(request: Request): Response | null {
   const origin = request.headers.get('Origin');
@@ -89,6 +95,18 @@ export default {
       }
       if (path === '/api/v1/classes' && method === 'POST') {
         return await handleCreateClass(request, env);
+      }
+      if (path.startsWith('/api/v1/classes/') && method === 'GET') {
+        const classId = path.replace('/api/v1/classes/', '').split('/')[0];
+        return await handleGetClassById(classId, request, env);
+      }
+      if (path.startsWith('/api/v1/classes/') && method === 'PUT') {
+        const classId = path.replace('/api/v1/classes/', '').split('/')[0];
+        return await handleUpdateClass(classId, request, env);
+      }
+      if (path.startsWith('/api/v1/classes/') && method === 'DELETE') {
+        const classId = path.replace('/api/v1/classes/', '').split('/')[0];
+        return await handleDeleteClass(classId, request, env);
       }
 
       // ----------------------------------------------------------------------

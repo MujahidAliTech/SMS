@@ -83,13 +83,13 @@ VALUES
 -- PBKDF2-SHA256 (100,000 iterations)
 INSERT OR IGNORE INTO user_credentials (user_id, password_hash, password_salt)
 VALUES
-('user-super-1', '67389a1c62f275e7a9b09a475586616016e788448f76dfd2217c91350f4a86ef', 'taleem_demo_salt_2026'),
-('user-admin-bfs', '67389a1c62f275e7a9b09a475586616016e788448f76dfd2217c91350f4a86ef', 'taleem_demo_salt_2026'),
-('user-principal-bfs', '67389a1c62f275e7a9b09a475586616016e788448f76dfd2217c91350f4a86ef', 'taleem_demo_salt_2026'),
-('user-teacher-bfs', '67389a1c62f275e7a9b09a475586616016e788448f76dfd2217c91350f4a86ef', 'taleem_demo_salt_2026'),
-('user-accountant-bfs', '67389a1c62f275e7a9b09a475586616016e788448f76dfd2217c91350f4a86ef', 'taleem_demo_salt_2026'),
-('user-parent-bfs', '67389a1c62f275e7a9b09a475586616016e788448f76dfd2217c91350f4a86ef', 'taleem_demo_salt_2026'),
-('user-student-bfs', '67389a1c62f275e7a9b09a475586616016e788448f76dfd2217c91350f4a86ef', 'taleem_demo_salt_2026');
+('user-super-1', 'f9873fe13ed5fbf2a1d7b75f4cf0701f256fdac5ab0300e4e1ea54303dc1df0e', 'taleem_demo_salt_2026'),
+('user-admin-bfs', 'f9873fe13ed5fbf2a1d7b75f4cf0701f256fdac5ab0300e4e1ea54303dc1df0e', 'taleem_demo_salt_2026'),
+('user-principal-bfs', 'f9873fe13ed5fbf2a1d7b75f4cf0701f256fdac5ab0300e4e1ea54303dc1df0e', 'taleem_demo_salt_2026'),
+('user-teacher-bfs', 'f9873fe13ed5fbf2a1d7b75f4cf0701f256fdac5ab0300e4e1ea54303dc1df0e', 'taleem_demo_salt_2026'),
+('user-accountant-bfs', 'f9873fe13ed5fbf2a1d7b75f4cf0701f256fdac5ab0300e4e1ea54303dc1df0e', 'taleem_demo_salt_2026'),
+('user-parent-bfs', 'f9873fe13ed5fbf2a1d7b75f4cf0701f256fdac5ab0300e4e1ea54303dc1df0e', 'taleem_demo_salt_2026'),
+('user-student-bfs', 'f9873fe13ed5fbf2a1d7b75f4cf0701f256fdac5ab0300e4e1ea54303dc1df0e', 'taleem_demo_salt_2026');
 
 -- 6. CLASSES
 INSERT OR IGNORE INTO school_classes (id, tenant_id, name, grade_numeric, class_teacher_name, capacity, total_students, monthly_tuition_fee)
