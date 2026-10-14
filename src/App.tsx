@@ -1,6 +1,13 @@
 import React from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AppProvider } from './context/AppContext';
+
+// Detect if running on GitHub Pages or static subfolder host where server-side rewrites aren't available
+const isGitHubPagesOrSubpath = typeof window !== 'undefined' && (
+  window.location.hostname.endsWith('github.io') ||
+  window.location.pathname.startsWith('/SMS') ||
+  window.location.pathname.startsWith('/sms')
+);
 
 // Layouts
 import { MarketingLayout } from './layouts/MarketingLayout';
@@ -52,9 +59,11 @@ import { ParentPortal, StudentPortal } from './pages/portals/ParentAndStudentPor
 import { SchoolPublicHome, SchoolPublicAdmissions } from './pages/school-public/SchoolPublicPages';
 
 export default function App() {
+  const Router = isGitHubPagesOrSubpath ? HashRouter : BrowserRouter;
+
   return (
     <AppProvider>
-      <BrowserRouter>
+      <Router>
         <Routes>
           {/* SaaS Marketing Public Routes */}
           <Route element={<MarketingLayout />}>
@@ -146,7 +155,7 @@ export default function App() {
           {/* Catch-all */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
-      </BrowserRouter>
+      </Router>
     </AppProvider>
   );
 }
