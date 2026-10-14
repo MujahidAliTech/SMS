@@ -1,6 +1,7 @@
 import React from 'react';
 import { BrowserRouter, HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AppProvider } from './context/AppContext';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 // Detect if running on GitHub Pages or static subfolder host where server-side rewrites aren't available
 const isGitHubPagesOrSubpath = typeof window !== 'undefined' && (
@@ -62,9 +63,10 @@ export default function App() {
   const Router = isGitHubPagesOrSubpath ? HashRouter : BrowserRouter;
 
   return (
-    <AppProvider>
-      <Router>
-        <Routes>
+    <ErrorBoundary>
+      <AppProvider>
+        <Router>
+          <Routes>
           {/* SaaS Marketing Public Routes */}
           <Route element={<MarketingLayout />}>
             <Route path="/" element={<HomePage />} />
@@ -157,5 +159,6 @@ export default function App() {
         </Routes>
       </Router>
     </AppProvider>
+  </ErrorBoundary>
   );
 }
