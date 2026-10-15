@@ -6,6 +6,7 @@
 import { Env } from '../types';
 import { jsonResponse, errorResponse } from '../utils/response';
 import { authenticateRequest, requireRoles, enforceTenantScoping } from '../middleware/auth';
+import { getTeacherAssignedClasses, getParentIdForUser, getStudentIdForUser } from './students';
 
 const MAX_IMAGE_SIZE_BYTES = 2 * 1024 * 1024; // 2 MB
 
@@ -296,6 +297,35 @@ export async function handleGetProfilePicture(
   const scopedTenantId = enforceTenantScoping(auth, entity.tenant_id);
   if (typeof scopedTenantId !== 'string') {
     return scopedTenantId; // 403 Forbidden
+  }
+
+  // Student Privacy & Access Protection
+  if (entityType === 'students') {
+    const userRole = auth.user.role;
+    if (userRole === 'teacher') {
+      const { classIds, classNames } = await getTeacherAssignedClasses(env, entity.tenant_id, auth.user);
+      const studentClass = await env.DB.prepare(`
+        SELECT class_id, class_name FROM students WHERE id = ? LIMIT 1
+      `).bind(entityId).first<{ class_id: string; class_name: string }>();
+
+      if (!studentClass || (!classIds.has(studentClass.class_id) && !classNames.has(studentClass.class_name))) {
+        return errorResponse('Access denied: You are not authorized to view photos of students outside your assigned classes', 403);
+      }
+    } else if (userRole === 'parent') {
+      const parentId = await getParentIdForUser(env, entity.tenant_id, auth.user);
+      const student = await env.DB.prepare(`
+        SELECT parent_id FROM students WHERE id = ? LIMIT 1
+      `).bind(entityId).first<{ parent_id: string }>();
+
+      if (!student || student.parent_id !== parentId) {
+        return errorResponse('Access denied: You can only view photos of your own registered children', 403);
+      }
+    } else if (userRole === 'student') {
+      const verifiedStudentId = await getStudentIdForUser(env, entity.tenant_id, auth.user);
+      if (!verifiedStudentId || verifiedStudentId !== entityId) {
+        return errorResponse('Access denied: You can only view your own profile photo', 403);
+      }
+    }
   }
 
   if (!entity.photo_key || !env.STORAGE) {

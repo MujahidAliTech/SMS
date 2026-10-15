@@ -193,10 +193,13 @@ export const TeachersStaffListPage: React.FC = () => {
       );
       setStaffList(data);
     } catch (err) {
-      console.error('Failed to load faculty records:', err);
+      console.warn('[TeachersStaffListPage] Remote sync notice:', err);
       const msg = (err as Error).message || 'Failed to fetch staff list';
-      setApiError(msg);
-      // Fallback display to prevent complete screen blank
+      if (msg.includes('Authentication required')) {
+        setApiError('Viewing local demo faculty records. To sync with Cloudflare D1, please log in with your school admin account.');
+      } else {
+        setApiError(msg);
+      }
       setStaffList(teacherStaffService.getAll(currentTenant.id));
     } finally {
       setIsLoading(false);

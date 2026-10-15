@@ -3,11 +3,11 @@
 // Multi-Tenant School Management SaaS
 // ============================================================================
 
-import { Env } from '../types';
+import { Env, AuthUser } from '../types';
 import { jsonResponse, errorResponse } from '../utils/response';
 import { authenticateRequest, requireRoles, enforceTenantScoping } from '../middleware/auth';
 
-interface StudentDbRow {
+export interface StudentDbRow {
   id: string;
   tenant_id: string;
   admission_no: string;
@@ -36,38 +36,308 @@ interface StudentDbRow {
   updated_at: string;
 }
 
-function formatStudent(row: StudentDbRow) {
+/**
+ * Resolves all classes assigned to a teacher based on:
+ * 1. assigned_classes_json in teachers_staff
+ * 2. class_teacher_name in school_classes
+ * 3. subjects taught in subjects table
+ */
+export async function getTeacherAssignedClasses(
+  env: Env,
+  tenantId: string,
+  user: AuthUser
+): Promise<{ classIds: Set<string>; classNames: Set<string> }> {
+  const classIds = new Set<string>();
+  const classNames = new Set<string>();
+
+  let teacherRow: { id: string; name: string; assigned_classes_json: string } | null = null;
+  if (user.linkedEntityId) {
+    teacherRow = await env.DB.prepare(`
+      SELECT id, name, assigned_classes_json
+      FROM teachers_staff
+      WHERE id = ? AND tenant_id = ?
+      LIMIT 1
+    `).bind(user.linkedEntityId, tenantId).first<{ id: string; name: string; assigned_classes_json: string }>();
+  }
+
+  if (!teacherRow && user.email) {
+    teacherRow = await env.DB.prepare(`
+      SELECT id, name, assigned_classes_json
+      FROM teachers_staff
+      WHERE email = ? AND tenant_id = ?
+      LIMIT 1
+    `).bind(user.email, tenantId).first<{ id: string; name: string; assigned_classes_json: string }>();
+  }
+
+  if (!teacherRow) {
+    return { classIds, classNames };
+  }
+
+  // 1. Parse assigned_classes_json
+  let assignedList: string[] = [];
+  try {
+    assignedList = JSON.parse(teacherRow.assigned_classes_json || '[]');
+  } catch {
+    assignedList = [];
+  }
+
+  for (const item of assignedList) {
+    if (typeof item === 'string' && item.trim()) {
+      classNames.add(item.trim());
+      classIds.add(item.trim());
+    }
+  }
+
+  // 2. Classes where teacher is designated class teacher or matches name in list
+  try {
+    const classRows = await env.DB.prepare(`
+      SELECT id, name
+      FROM school_classes
+      WHERE tenant_id = ?
+    `).bind(tenantId).all<{ id: string; name: string }>();
+
+    for (const c of classRows.results) {
+      if (assignedList.includes(c.name) || assignedList.includes(c.id)) {
+        classIds.add(c.id);
+        classNames.add(c.name);
+      }
+    }
+  } catch (err) {
+    console.warn('Error fetching classes for teacher:', err);
+  }
+
+  // 3. Subjects taught by this teacher
+  try {
+    const subjectsTaught = await env.DB.prepare(`
+      SELECT DISTINCT s.class_id, c.name as class_name
+      FROM subjects s
+      LEFT JOIN school_classes c ON s.class_id = c.id
+      WHERE s.tenant_id = ? AND (s.teacher_id = ? OR s.teacher_name = ?)
+    `).bind(tenantId, teacherRow.id, teacherRow.name).all<{ class_id: string; class_name: string | null }>();
+
+    for (const sub of subjectsTaught.results) {
+      if (sub.class_id) classIds.add(sub.class_id);
+      if (sub.class_name) classNames.add(sub.class_name);
+    }
+  } catch (err) {
+    console.warn('Error fetching subjects for teacher:', err);
+  }
+
+  return { classIds, classNames };
+}
+
+/**
+ * Resolves the parent record ID in D1 for the authenticated parent account
+ */
+export async function getParentIdForUser(
+  env: Env,
+  tenantId: string,
+  user: AuthUser
+): Promise<string | null> {
+  if (user.linkedEntityId) {
+    const parentRow = await env.DB.prepare(`
+      SELECT id FROM parents WHERE id = ? AND tenant_id = ? LIMIT 1
+    `).bind(user.linkedEntityId, tenantId).first<{ id: string }>();
+    if (parentRow) return parentRow.id;
+  }
+
+  if (user.email || user.phone) {
+    const parentRow = await env.DB.prepare(`
+      SELECT id FROM parents WHERE tenant_id = ? AND (email = ? OR phone = ?) LIMIT 1
+    `).bind(tenantId, user.email || '', user.phone || '').first<{ id: string }>();
+    if (parentRow) return parentRow.id;
+  }
+
+  return null;
+}
+
+/**
+ * Resolves the student record ID in D1 for the authenticated student account
+ */
+export async function getStudentIdForUser(
+  env: Env,
+  tenantId: string,
+  user: AuthUser
+): Promise<string | null> {
+  if (user.linkedEntityId) {
+    const stRow = await env.DB.prepare(`
+      SELECT id FROM students WHERE id = ? AND tenant_id = ? LIMIT 1
+    `).bind(user.linkedEntityId, tenantId).first<{ id: string }>();
+    if (stRow) return stRow.id;
+  }
+
+  if (user.email) {
+    // If student email contains admission number or matches
+    const admissionPart = user.email.split('@')[0];
+    const stRow = await env.DB.prepare(`
+      SELECT id FROM students WHERE tenant_id = ? AND LOWER(admission_no) = LOWER(?) LIMIT 1
+    `).bind(tenantId, admissionPart).first<{ id: string }>();
+    if (stRow) return stRow.id;
+  }
+
+  return null;
+}
+
+/**
+ * Sanitizes and formats student records according to the caller's server-verified role.
+ * Enforces zero data leakage for private student/guardian identifiers.
+ */
+export function formatStudentForRole(row: StudentDbRow, role: AuthUser['role']) {
+  const photoUrl = row.photo_key ? `/api/v1/media/avatar/students/${row.id}` : (row.photo_url || undefined);
+
+  // 1. School Admin, Principal & Super Admin: Complete record for administration
+  if (['school_admin', 'principal', 'super_admin'].includes(role)) {
+    return {
+      id: row.id,
+      tenantId: row.tenant_id,
+      admissionNo: row.admission_no,
+      name: row.name,
+      fatherName: row.father_name,
+      motherName: row.mother_name || undefined,
+      gender: row.gender,
+      dob: row.dob,
+      admissionDate: row.admission_date,
+      classId: row.class_id,
+      className: row.class_name,
+      sectionId: row.section_id,
+      sectionName: row.section_name,
+      rollNo: row.roll_no,
+      parentId: row.parent_id,
+      parentContact: row.parent_contact,
+      emergencyContact: row.emergency_contact || undefined,
+      address: row.address,
+      bFormOrCnic: row.b_form_or_cnic,
+      previousSchool: row.previous_school || undefined,
+      status: row.status,
+      photoUrl,
+      photoKey: row.photo_key || undefined,
+      monthlyFee: row.monthly_fee
+    };
+  }
+
+  // 2. Teacher: Academic teaching duties only.
+  // Private residential addresses, B-Form/CNIC, monthly fee, and guardian details are strictly omitted.
+  if (role === 'teacher') {
+    return {
+      id: row.id,
+      tenantId: row.tenant_id,
+      admissionNo: row.admission_no,
+      name: row.name,
+      fatherName: row.father_name,
+      gender: row.gender,
+      dob: row.dob,
+      classId: row.class_id,
+      className: row.class_name,
+      sectionId: row.section_id,
+      sectionName: row.section_name,
+      rollNo: row.roll_no,
+      status: row.status,
+      photoUrl,
+      photoKey: row.photo_key || undefined
+    };
+  }
+
+  // 3. Accountant: Billing & fee collection duties only.
+  // Residential addresses, B-Form identifiers, and emergency contacts are strictly omitted.
+  if (role === 'accountant') {
+    return {
+      id: row.id,
+      tenantId: row.tenant_id,
+      admissionNo: row.admission_no,
+      name: row.name,
+      fatherName: row.father_name,
+      gender: row.gender,
+      classId: row.class_id,
+      className: row.class_name,
+      sectionId: row.section_id,
+      sectionName: row.section_name,
+      rollNo: row.roll_no,
+      parentId: row.parent_id,
+      parentContact: row.parent_contact,
+      monthlyFee: row.monthly_fee,
+      status: row.status,
+      photoUrl,
+      photoKey: row.photo_key || undefined
+    };
+  }
+
+  // 4. Parent: Access to their own verified child
+  if (role === 'parent') {
+    return {
+      id: row.id,
+      tenantId: row.tenant_id,
+      admissionNo: row.admission_no,
+      name: row.name,
+      fatherName: row.father_name,
+      motherName: row.mother_name || undefined,
+      gender: row.gender,
+      dob: row.dob,
+      admissionDate: row.admission_date,
+      classId: row.class_id,
+      className: row.class_name,
+      sectionId: row.section_id,
+      sectionName: row.section_name,
+      rollNo: row.roll_no,
+      parentId: row.parent_id,
+      parentContact: row.parent_contact,
+      emergencyContact: row.emergency_contact || undefined,
+      address: row.address,
+      bFormOrCnic: row.b_form_or_cnic,
+      previousSchool: row.previous_school || undefined,
+      status: row.status,
+      photoUrl,
+      photoKey: row.photo_key || undefined,
+      monthlyFee: row.monthly_fee
+    };
+  }
+
+  // 5. Student: Access to their own verified student record
+  if (role === 'student') {
+    return {
+      id: row.id,
+      tenantId: row.tenant_id,
+      admissionNo: row.admission_no,
+      name: row.name,
+      fatherName: row.father_name,
+      gender: row.gender,
+      dob: row.dob,
+      admissionDate: row.admission_date,
+      classId: row.class_id,
+      className: row.class_name,
+      sectionId: row.section_id,
+      sectionName: row.section_name,
+      rollNo: row.roll_no,
+      status: row.status,
+      photoUrl,
+      photoKey: row.photo_key || undefined,
+      monthlyFee: row.monthly_fee
+    };
+  }
+
+  // Default fallback (safest minimal profile)
   return {
     id: row.id,
     tenantId: row.tenant_id,
     admissionNo: row.admission_no,
     name: row.name,
-    fatherName: row.father_name,
-    motherName: row.mother_name || undefined,
-    gender: row.gender,
-    dob: row.dob,
-    admissionDate: row.admission_date,
     classId: row.class_id,
     className: row.class_name,
     sectionId: row.section_id,
     sectionName: row.section_name,
     rollNo: row.roll_no,
-    parentId: row.parent_id,
-    parentContact: row.parent_contact,
-    emergencyContact: row.emergency_contact || undefined,
-    address: row.address,
-    bFormOrCnic: row.b_form_or_cnic,
-    previousSchool: row.previous_school || undefined,
     status: row.status,
-    photoUrl: row.photo_key ? `/api/v1/media/avatar/students/${row.id}` : (row.photo_url || undefined),
-    photoKey: row.photo_key || undefined,
-    monthlyFee: row.monthly_fee
+    photoUrl
   };
 }
 
 /**
  * GET /api/v1/students
- * Supports search, classId, status, gender query parameters
+ * Strictly tenant-isolated and role-scoped:
+ * - Admin/Principal/Super Admin: All students in tenant
+ * - Accountant: All students in tenant (sanitized: no B-Form or addresses)
+ * - Teacher: Only students in classes assigned to this teacher (sanitized: teaching duties only)
+ * - Parent: Only children explicitly linked to authenticated parent account in D1
+ * - Student: Only the authenticated student's own record
  */
 export async function handleGetStudents(request: Request, env: Env): Promise<Response> {
   const { auth, error } = await authenticateRequest(request, env);
@@ -85,12 +355,93 @@ export async function handleGetStudents(request: Request, env: Env): Promise<Res
   const status = url.searchParams.get('status');
   const gender = url.searchParams.get('gender');
 
+  const userRole = auth.user.role;
+
+  // --------------------------------------------------------------------------
+  // ROLE-SPECIFIC SCOPING LOGIC
+  // --------------------------------------------------------------------------
+
+  // 1. Parent: Can ONLY access their own linked children
+  if (userRole === 'parent') {
+    const parentId = await getParentIdForUser(env, scopedTenantId, auth.user);
+    if (!parentId) {
+      return jsonResponse([], 200, {}, scopedTenantId);
+    }
+
+    const parentResults = await env.DB.prepare(`
+      SELECT *
+      FROM students
+      WHERE tenant_id = ? AND parent_id = ?
+      ORDER BY name ASC
+    `).bind(scopedTenantId, parentId).all<StudentDbRow>();
+
+    const formatted = parentResults.results.map(row => formatStudentForRole(row, 'parent'));
+    return jsonResponse(formatted, 200, {}, scopedTenantId);
+  }
+
+  // 2. Student: Can ONLY access their own student record
+  if (userRole === 'student') {
+    const studentId = await getStudentIdForUser(env, scopedTenantId, auth.user);
+    if (!studentId) {
+      return jsonResponse([], 200, {}, scopedTenantId);
+    }
+
+    const studentRow = await env.DB.prepare(`
+      SELECT *
+      FROM students
+      WHERE tenant_id = ? AND id = ?
+      LIMIT 1
+    `).bind(scopedTenantId, studentId).first<StudentDbRow>();
+
+    if (!studentRow) {
+      return jsonResponse([], 200, {}, scopedTenantId);
+    }
+
+    const formatted = [formatStudentForRole(studentRow, 'student')];
+    return jsonResponse(formatted, 200, {}, scopedTenantId);
+  }
+
+  // 3. Teacher: Must ONLY access students in classes assigned to this teacher
+  let teacherClassFilterClause = '';
+  const teacherFilterParams: unknown[] = [];
+
+  if (userRole === 'teacher') {
+    const { classIds, classNames } = await getTeacherAssignedClasses(env, scopedTenantId, auth.user);
+
+    if (classIds.size === 0 && classNames.size === 0) {
+      // Teacher has no assigned classes yet
+      return jsonResponse([], 200, {}, scopedTenantId);
+    }
+
+    const idArr = Array.from(classIds);
+    const nameArr = Array.from(classNames);
+
+    // If client requested a specific classId filter, ensure teacher is assigned to it
+    if (classId && classId !== 'all') {
+      if (!classIds.has(classId) && !classNames.has(classId)) {
+        return jsonResponse([], 200, {}, scopedTenantId);
+      }
+    }
+
+    const idPlaceholders = idArr.map(() => '?').join(',');
+    const namePlaceholders = nameArr.map(() => '?').join(',');
+
+    teacherClassFilterClause = ` AND (class_id IN (${idPlaceholders}) OR class_name IN (${namePlaceholders}))`;
+    teacherFilterParams.push(...idArr, ...nameArr);
+  }
+
+  // 4. Build standard query for school_admin, principal, super_admin, accountant, and scoped teacher
   let query = `
     SELECT *
     FROM students
     WHERE tenant_id = ?
   `;
   const params: unknown[] = [scopedTenantId];
+
+  if (teacherClassFilterClause) {
+    query += teacherClassFilterClause;
+    params.push(...teacherFilterParams);
+  }
 
   if (classId && classId !== 'all') {
     query += ` AND class_id = ?`;
@@ -122,13 +473,14 @@ export async function handleGetStudents(request: Request, env: Env): Promise<Res
   query += ` ORDER BY class_name ASC, roll_no ASC, name ASC`;
 
   const results = await env.DB.prepare(query).bind(...params).all<StudentDbRow>();
-  const formatted = results.results.map(formatStudent);
+  const formatted = results.results.map(row => formatStudentForRole(row, userRole));
 
   return jsonResponse(formatted, 200, {}, scopedTenantId);
 }
 
 /**
  * GET /api/v1/students/:id
+ * Server-authoritative record verification and role permission check
  */
 export async function handleGetStudentById(studentId: string, request: Request, env: Env): Promise<Response> {
   const { auth, error } = await authenticateRequest(request, env);
@@ -149,12 +501,47 @@ export async function handleGetStudentById(studentId: string, request: Request, 
     return errorResponse('Student not found in your school records', 404);
   }
 
-  return jsonResponse(formatStudent(row), 200, {}, scopedTenantId);
+  const userRole = auth.user.role;
+
+  // 1. Parent authorization: Verify explicit D1 relationship
+  if (userRole === 'parent') {
+    const parentId = await getParentIdForUser(env, scopedTenantId, auth.user);
+    if (!parentId || row.parent_id !== parentId) {
+      return errorResponse('Access denied: You can only view records for your own registered children', 403);
+    }
+    return jsonResponse(formatStudentForRole(row, 'parent'), 200, {}, scopedTenantId);
+  }
+
+  // 2. Student authorization: Must only view their own record
+  if (userRole === 'student') {
+    const verifiedStudentId = await getStudentIdForUser(env, scopedTenantId, auth.user);
+    if (!verifiedStudentId || studentId !== verifiedStudentId) {
+      return errorResponse('Access denied: You can only view your own student profile', 403);
+    }
+    return jsonResponse(formatStudentForRole(row, 'student'), 200, {}, scopedTenantId);
+  }
+
+  // 3. Teacher authorization: Must teach the student's assigned class
+  if (userRole === 'teacher') {
+    const { classIds, classNames } = await getTeacherAssignedClasses(env, scopedTenantId, auth.user);
+    if (!classIds.has(row.class_id) && !classNames.has(row.class_name)) {
+      return errorResponse('Access denied: You are not assigned to teach this student\'s class', 403);
+    }
+    return jsonResponse(formatStudentForRole(row, 'teacher'), 200, {}, scopedTenantId);
+  }
+
+  // 4. Accountant: Allowed for fee collection duties (sanitized)
+  if (userRole === 'accountant') {
+    return jsonResponse(formatStudentForRole(row, 'accountant'), 200, {}, scopedTenantId);
+  }
+
+  // 5. School Admin, Principal & Super Admin: Full details
+  return jsonResponse(formatStudentForRole(row, userRole), 200, {}, scopedTenantId);
 }
 
 /**
  * POST /api/v1/students
- * Creates a new student record with relational verification
+ * Creates a new student record with relational verification (Admin/Principal only)
  */
 export async function handleCreateStudent(request: Request, env: Env): Promise<Response> {
   const { auth, error } = await authenticateRequest(request, env);
@@ -220,7 +607,6 @@ export async function handleCreateStudent(request: Request, env: Env): Promise<R
     if (secRecord) {
       resolvedSectionName = secRecord.name;
     } else {
-      // Find first available section for this class
       const firstSec = await env.DB.prepare(`
         SELECT id, name FROM class_sections WHERE class_id = ? AND tenant_id = ? LIMIT 1
       `).bind(classId, scopedTenantId).first<{ id: string; name: string }>();
@@ -239,7 +625,6 @@ export async function handleCreateStudent(request: Request, env: Env): Promise<R
   // 4. Resolve Parent Record
   let parentId = body.parentId;
   if (!parentId) {
-    // Find or create parent
     const existingParent = await env.DB.prepare(`
       SELECT id FROM parents WHERE tenant_id = ? AND (phone = ? OR name = ?) LIMIT 1
     `).bind(scopedTenantId, parentContact, fatherName).first<{ id: string }>();
@@ -284,7 +669,6 @@ export async function handleCreateStudent(request: Request, env: Env): Promise<R
       body.previousSchool || null, status, monthlyFee
     ).run();
 
-    // Update tenant active student count
     await env.DB.prepare(`
       UPDATE tenants
       SET active_student_count = (SELECT COUNT(*) FROM students WHERE tenant_id = ? AND status = 'active'),
@@ -300,7 +684,7 @@ export async function handleCreateStudent(request: Request, env: Env): Promise<R
 
 /**
  * PUT /api/v1/students/:id
- * Updates student information
+ * Updates student information (Admin/Principal only)
  */
 export async function handleUpdateStudent(studentId: string, request: Request, env: Env): Promise<Response> {
   const { auth, error } = await authenticateRequest(request, env);
@@ -388,7 +772,6 @@ export async function handleUpdateStudent(studentId: string, request: Request, e
       updatedPreviousSchool, updatedStatus, updatedMonthlyFee, studentId, scopedTenantId
     ).run();
 
-    // Update tenant active student count
     await env.DB.prepare(`
       UPDATE tenants
       SET active_student_count = (SELECT COUNT(*) FROM students WHERE tenant_id = ? AND status = 'active'),
@@ -404,7 +787,7 @@ export async function handleUpdateStudent(studentId: string, request: Request, e
 
 /**
  * DELETE /api/v1/students/:id
- * Enforces relational integrity before permanent removal
+ * Enforces relational integrity before permanent removal (Admin/Principal only)
  */
 export async function handleDeleteStudent(studentId: string, request: Request, env: Env): Promise<Response> {
   const { auth, error } = await authenticateRequest(request, env);

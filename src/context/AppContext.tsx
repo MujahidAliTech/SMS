@@ -54,7 +54,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Stage 4B Auth and Backend Mode State
   const [storageMode, setStorageModeState] = useState<StorageMode>(() => {
-    return (localStorage.getItem('taleemcloud_storage_mode') as StorageMode) || 'cloudflare_d1';
+    return (localStorage.getItem('taleemcloud_storage_mode') as StorageMode) || 'local_storage';
   });
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [isAuthChecking, setIsAuthChecking] = useState<boolean>(true);

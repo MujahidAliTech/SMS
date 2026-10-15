@@ -3,11 +3,11 @@
 // Multi-Tenant School Management SaaS
 // ============================================================================
 
-import { Env } from '../types';
+import { Env, AuthUser } from '../types';
 import { jsonResponse, errorResponse } from '../utils/response';
 import { authenticateRequest, requireRoles, enforceTenantScoping } from '../middleware/auth';
 
-interface TeacherDbRow {
+export interface TeacherDbRow {
   id: string;
   tenant_id: string;
   teacher_code: string | null;
@@ -29,7 +29,15 @@ interface TeacherDbRow {
   updated_at: string;
 }
 
-function formatTeacher(row: TeacherDbRow) {
+/**
+ * Sanitizes staff records according to the caller's role.
+ * Strictly prevents teachers from viewing other faculty members' salary and CNIC.
+ */
+export function formatTeacherForRole(
+  row: TeacherDbRow,
+  userRole: AuthUser['role'],
+  isSelf: boolean
+) {
   let subjects: string[] = [];
   try {
     subjects = JSON.parse(row.subjects_json || '[]');
@@ -44,7 +52,7 @@ function formatTeacher(row: TeacherDbRow) {
     assignedClasses = [];
   }
 
-  return {
+  const base = {
     id: row.id,
     tenantId: row.tenant_id,
     teacherCode: row.teacher_code || undefined,
@@ -57,17 +65,55 @@ function formatTeacher(row: TeacherDbRow) {
     joiningDate: row.joining_date,
     phone: row.phone,
     email: row.email,
-    cnic: row.cnic,
     employmentStatus: row.employment_status,
-    salaryMonthly: row.salary_monthly,
     photoUrl: row.photo_key ? `/api/v1/media/avatar/teachers/${row.id}` : (row.photo_url || undefined),
     photoKey: row.photo_key || undefined
+  };
+
+  // 1. School Admin, Principal & Super Admin: Complete access to salary & CNIC
+  if (['school_admin', 'principal', 'super_admin'].includes(userRole)) {
+    return {
+      ...base,
+      cnic: row.cnic,
+      salaryMonthly: row.salary_monthly
+    };
+  }
+
+  // 2. Accountant: Authorized for compensation/salary, CNIC masked
+  if (userRole === 'accountant') {
+    const parts = row.cnic.split('-');
+    const maskedCnic = parts.length === 3 ? `${parts[0]}-*******-${parts[2]}` : '*****';
+    return {
+      ...base,
+      cnic: maskedCnic,
+      salaryMonthly: row.salary_monthly
+    };
+  }
+
+  // 3. Teacher: If viewing their OWN record, salary & CNIC are visible;
+  // If viewing other faculty members, salary and CNIC are strictly OMITTED.
+  if (userRole === 'teacher') {
+    if (isSelf) {
+      return {
+        ...base,
+        cnic: row.cnic,
+        salaryMonthly: row.salary_monthly
+      };
+    }
+    return {
+      ...base
+    };
+  }
+
+  // 4. Parents & Students: Public academic directory only; salary & CNIC strictly omitted.
+  return {
+    ...base
   };
 }
 
 /**
  * GET /api/v1/teachers
- * Supports search, role, status query parameters
+ * Supports search, role, status query parameters with server-side compensation protection
  */
 export async function handleGetTeachers(request: Request, env: Env): Promise<Response> {
   const { auth, error } = await authenticateRequest(request, env);
@@ -113,7 +159,15 @@ export async function handleGetTeachers(request: Request, env: Env): Promise<Res
   query += ` ORDER BY name ASC`;
 
   const results = await env.DB.prepare(query).bind(...params).all<TeacherDbRow>();
-  const formatted = results.results.map(formatTeacher);
+
+  const userRole = auth.user.role;
+  const userLinkedId = auth.user.linkedEntityId;
+  const userEmail = auth.user.email?.toLowerCase();
+
+  const formatted = results.results.map(row => {
+    const isSelf = (userLinkedId && userLinkedId === row.id) || (userEmail && userEmail === row.email.toLowerCase());
+    return formatTeacherForRole(row, userRole, !!isSelf);
+  });
 
   return jsonResponse(formatted, 200, {}, scopedTenantId);
 }
@@ -140,7 +194,11 @@ export async function handleGetTeacherById(teacherId: string, request: Request, 
     return errorResponse('Faculty or staff record not found in your school', 404);
   }
 
-  return jsonResponse(formatTeacher(row), 200, {}, scopedTenantId);
+  const userRole = auth.user.role;
+  const isSelf = (auth.user.linkedEntityId && auth.user.linkedEntityId === row.id) ||
+                 (auth.user.email && auth.user.email.toLowerCase() === row.email.toLowerCase());
+
+  return jsonResponse(formatTeacherForRole(row, userRole, !!isSelf), 200, {}, scopedTenantId);
 }
 
 /**

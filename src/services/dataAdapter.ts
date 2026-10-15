@@ -27,6 +27,10 @@ export const classApiAdapter = {
     if (mode === 'cloudflare_d1') {
       const { data, error } = await apiClient.get<SchoolClass[]>(`/classes?tenantId=${encodeURIComponent(tenantId)}`);
       if (error) {
+        if (error.status === 401) {
+          console.warn('[classApiAdapter] Authentication required for Cloudflare D1. Returning local demo records.');
+          return classService.getAll(tenantId);
+        }
         throw new Error(`Cloudflare D1 query failed: ${error.message}`);
       }
       return data || [];
@@ -40,6 +44,10 @@ export const classApiAdapter = {
     if (mode === 'cloudflare_d1') {
       const { data, error } = await apiClient.get<SchoolClass>(`/classes/${encodeURIComponent(id)}?tenantId=${encodeURIComponent(tenantId)}`);
       if (error) {
+        if (error.status === 401) {
+          console.warn('[classApiAdapter] Authentication required for Cloudflare D1. Returning local demo record.');
+          return classService.getById(id);
+        }
         if (error.status === 404) return undefined;
         throw new Error(`Failed to load class from D1: ${error.message}`);
       }
@@ -56,6 +64,9 @@ export const classApiAdapter = {
     if (mode === 'cloudflare_d1') {
       const { data: created, error } = await apiClient.post<SchoolClass>('/classes', data);
       if (error || !created) {
+        if (error?.status === 401) {
+          throw new Error('Authentication required: Please log in with a school administrator account to save records to Cloudflare D1.');
+        }
         throw new Error(error?.message || 'Failed to create class on Cloudflare D1');
       }
       return created;
@@ -74,6 +85,9 @@ export const classApiAdapter = {
       const payload = { ...updates, tenantId };
       const { data: updated, error } = await apiClient.put<SchoolClass>(`/classes/${encodeURIComponent(id)}`, payload);
       if (error || !updated) {
+        if (error?.status === 401) {
+          throw new Error('Authentication required: Please log in with a school administrator account to update records on Cloudflare D1.');
+        }
         throw new Error(error?.message || 'Failed to update class on Cloudflare D1');
       }
       return updated;
@@ -92,6 +106,9 @@ export const classApiAdapter = {
         `/classes/${encodeURIComponent(id)}?tenantId=${encodeURIComponent(tenantId)}`
       );
       if (error) {
+        if (error.status === 401) {
+          throw new Error('Authentication required: Please log in with a school administrator account to delete records from Cloudflare D1.');
+        }
         throw new Error(error.message);
       }
       return;
@@ -120,6 +137,10 @@ export const studentApiAdapter = {
 
       const { data, error } = await apiClient.get<Student[]>(`/students?${params.toString()}`);
       if (error) {
+        if (error.status === 401) {
+          console.warn('[studentApiAdapter] Authentication required for Cloudflare D1 query. Returning local demo records.');
+          return studentService.getAll(tenantId);
+        }
         throw new Error(`Cloudflare D1 query failed: ${error.message}`);
       }
       return data || [];
@@ -132,6 +153,10 @@ export const studentApiAdapter = {
     if (mode === 'cloudflare_d1') {
       const { data, error } = await apiClient.get<Student>(`/students/${encodeURIComponent(id)}?tenantId=${encodeURIComponent(tenantId)}`);
       if (error) {
+        if (error.status === 401) {
+          console.warn('[studentApiAdapter] Authentication required for Cloudflare D1. Returning local demo record.');
+          return studentService.getById(id);
+        }
         if (error.status === 404) return undefined;
         throw new Error(`Failed to load student from D1: ${error.message}`);
       }
@@ -148,6 +173,9 @@ export const studentApiAdapter = {
     if (mode === 'cloudflare_d1') {
       const { data: created, error } = await apiClient.post<Student>('/students', data);
       if (error || !created) {
+        if (error?.status === 401) {
+          throw new Error('Authentication required: Please log in with a school administrator account to admit students to Cloudflare D1.');
+        }
         throw new Error(error?.message || 'Failed to create student on Cloudflare D1');
       }
       return created;
@@ -166,6 +194,9 @@ export const studentApiAdapter = {
       const payload = { ...updates, tenantId };
       const { data: updated, error } = await apiClient.put<Student>(`/students/${encodeURIComponent(id)}`, payload);
       if (error || !updated) {
+        if (error?.status === 401) {
+          throw new Error('Authentication required: Please log in with a school administrator account to update student records on Cloudflare D1.');
+        }
         throw new Error(error?.message || 'Failed to update student on Cloudflare D1');
       }
       return updated;
@@ -184,6 +215,9 @@ export const studentApiAdapter = {
         `/students/${encodeURIComponent(id)}?tenantId=${encodeURIComponent(tenantId)}`
       );
       if (error) {
+        if (error.status === 401) {
+          throw new Error('Authentication required: Please log in with a school administrator account to delete student records from Cloudflare D1.');
+        }
         throw new Error(error.message);
       }
       return;
@@ -208,6 +242,9 @@ export const studentApiAdapter = {
       );
 
       if (error || !data) {
+        if (error?.status === 401) {
+          throw new Error('Authentication required: Please log in with a school administrator account to upload photos to Cloudflare R2.');
+        }
         throw new Error(error?.message || 'Failed to upload photo to Cloudflare R2 storage');
       }
       return data;
@@ -229,6 +266,9 @@ export const studentApiAdapter = {
         `/students/${encodeURIComponent(id)}/photo?tenantId=${encodeURIComponent(tenantId)}`
       );
       if (error) {
+        if (error.status === 401) {
+          throw new Error('Authentication required: Please log in with a school administrator account to delete photos from Cloudflare R2.');
+        }
         throw new Error(error.message);
       }
       return;
@@ -256,6 +296,10 @@ export const teacherStaffApiAdapter = {
 
       const { data, error } = await apiClient.get<TeacherStaff[]>(`/teachers?${params.toString()}`);
       if (error) {
+        if (error.status === 401) {
+          console.warn('[teacherStaffApiAdapter] Authentication required for Cloudflare D1. Returning local demo records.');
+          return teacherStaffService.getAll(tenantId);
+        }
         throw new Error(`Cloudflare D1 query failed: ${error.message}`);
       }
       return data || [];
@@ -268,6 +312,10 @@ export const teacherStaffApiAdapter = {
     if (mode === 'cloudflare_d1') {
       const { data, error } = await apiClient.get<TeacherStaff>(`/teachers/${encodeURIComponent(id)}?tenantId=${encodeURIComponent(tenantId)}`);
       if (error) {
+        if (error.status === 401) {
+          console.warn('[teacherStaffApiAdapter] Authentication required for Cloudflare D1. Returning local demo record.');
+          return teacherStaffService.getById(id);
+        }
         if (error.status === 404) return undefined;
         throw new Error(`Failed to load staff record from D1: ${error.message}`);
       }
@@ -284,6 +332,9 @@ export const teacherStaffApiAdapter = {
     if (mode === 'cloudflare_d1') {
       const { data: created, error } = await apiClient.post<TeacherStaff>('/teachers', data);
       if (error || !created) {
+        if (error?.status === 401) {
+          throw new Error('Authentication required: Please log in with a school administrator account to register faculty on Cloudflare D1.');
+        }
         throw new Error(error?.message || 'Failed to create faculty record on Cloudflare D1');
       }
       return created;
@@ -302,6 +353,9 @@ export const teacherStaffApiAdapter = {
       const payload = { ...updates, tenantId };
       const { data: updated, error } = await apiClient.put<TeacherStaff>(`/teachers/${encodeURIComponent(id)}`, payload);
       if (error || !updated) {
+        if (error?.status === 401) {
+          throw new Error('Authentication required: Please log in with a school administrator account to update faculty on Cloudflare D1.');
+        }
         throw new Error(error?.message || 'Failed to update staff record on Cloudflare D1');
       }
       return updated;
@@ -320,6 +374,9 @@ export const teacherStaffApiAdapter = {
         `/teachers/${encodeURIComponent(id)}?tenantId=${encodeURIComponent(tenantId)}`
       );
       if (error) {
+        if (error.status === 401) {
+          throw new Error('Authentication required: Please log in with a school administrator account to delete faculty records from Cloudflare D1.');
+        }
         throw new Error(error.message);
       }
       return;
@@ -344,6 +401,9 @@ export const teacherStaffApiAdapter = {
       );
 
       if (error || !data) {
+        if (error?.status === 401) {
+          throw new Error('Authentication required: Please log in with a school administrator account to upload faculty photos to Cloudflare R2.');
+        }
         throw new Error(error?.message || 'Failed to upload photo to Cloudflare R2 storage');
       }
       return data;
@@ -364,6 +424,9 @@ export const teacherStaffApiAdapter = {
         `/teachers/${encodeURIComponent(id)}/photo?tenantId=${encodeURIComponent(tenantId)}`
       );
       if (error) {
+        if (error.status === 401) {
+          throw new Error('Authentication required: Please log in with a school administrator account to delete faculty photos from Cloudflare R2.');
+        }
         throw new Error(error.message);
       }
       return;

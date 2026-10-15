@@ -115,10 +115,13 @@ export const StudentsListPage: React.FC = () => {
         setClasses(classService.getAll(currentTenant.id));
       }
     } catch (err) {
-      console.error('Failed to load students:', err);
+      console.warn('[StudentsListPage] Remote sync notice:', err);
       const msg = (err as Error).message || 'Failed to fetch student records';
-      setApiError(msg);
-      // Fallback display so interface doesn't completely break
+      if (msg.includes('Authentication required')) {
+        setApiError('Viewing local demo records. To sync with Cloudflare D1, please log in with your school admin account.');
+      } else {
+        setApiError(msg);
+      }
       setStudents(studentService.getAll(currentTenant.id));
     } finally {
       setIsLoading(false);

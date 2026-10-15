@@ -63,9 +63,13 @@ export const ClassesSectionsListPage: React.FC = () => {
       const data = await classApiAdapter.getClasses(currentTenant.id, storageMode);
       setClasses(data);
     } catch (err) {
-      console.error('Failed to load classes:', err);
-      setApiError((err as Error).message || 'Failed to load classes from server');
-      // If remote failed, fallback to local so the UI is not empty, but display error
+      console.warn('[ClassesSectionsListPage] Remote sync notice:', err);
+      const msg = (err as Error).message || 'Failed to load classes from server';
+      if (msg.includes('Authentication required')) {
+        setApiError('Viewing local demo classes. To sync with Cloudflare D1, please log in with your school admin account.');
+      } else {
+        setApiError(msg);
+      }
       setClasses(classService.getAll(currentTenant.id));
     } finally {
       setIsLoading(false);
