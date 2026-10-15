@@ -1,13 +1,13 @@
 // ============================================================================
-// Local SQLite Adapter for Cloudflare D1 Emulation in Node / Local Dev
-// Implements the D1Database and D1PreparedStatement interfaces natively
+// Local SQLite Adapter for Cloudflare D1 & R2 Emulation in Node / Local Dev
+// Implements the D1Database and R2Bucket interfaces natively
 // using Node 22's built-in DatabaseSync (node:sqlite)
 // ============================================================================
 
 import { DatabaseSync, StatementSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
-import { D1Database, D1PreparedStatement, D1Response, R2Bucket, Env } from '../types';
+import { D1Database, D1PreparedStatement, D1Response, R2Bucket, R2ObjectBody, R2HttpMetadata, Env } from '../types';
 
 class LocalD1PreparedStatement implements D1PreparedStatement {
   private stmt: StatementSync;
@@ -100,6 +100,25 @@ export class LocalD1Database implements D1Database {
         this.db.exec(migration2);
         console.log('[Local D1] Schema and demo data seeded successfully.');
       }
+
+      // Check if photo_key columns exist on students and teachers_staff
+      try {
+        const studentCols = this.db.prepare("PRAGMA table_info('students')").all() as { name: string }[];
+        const hasStudentPhotoKey = studentCols.some(c => c.name === 'photo_key');
+        if (!hasStudentPhotoKey) {
+          console.log('[Local D1] Applying migration 0003 for students.photo_key...');
+          this.db.exec('ALTER TABLE students ADD COLUMN photo_key TEXT;');
+        }
+
+        const staffCols = this.db.prepare("PRAGMA table_info('teachers_staff')").all() as { name: string }[];
+        const hasStaffPhotoKey = staffCols.some(c => c.name === 'photo_key');
+        if (!hasStaffPhotoKey) {
+          console.log('[Local D1] Applying migration 0003 for teachers_staff.photo_key...');
+          this.db.exec('ALTER TABLE teachers_staff ADD COLUMN photo_key TEXT;');
+        }
+      } catch (err) {
+        console.warn('[Local D1] Check for photo_key column skipped or error:', err);
+      }
     } catch (err) {
       console.error('[Local D1] Error applying migrations:', err);
     }
@@ -124,19 +143,71 @@ export class LocalD1Database implements D1Database {
   }
 }
 
+interface StoredR2Object {
+  data: Uint8Array;
+  contentType: string;
+  size: number;
+  uploadedAt: string;
+}
+
 /**
- * Local in-memory mock for Cloudflare R2 storage
+ * High-fidelity local simulation for Cloudflare R2 storage
+ * Supports byte buffers, streaming conversions, and content-type metadata.
  */
 export class LocalR2Bucket implements R2Bucket {
-  private store = new Map<string, unknown>();
+  private store = new Map<string, StoredR2Object>();
 
-  async get(key: string): Promise<unknown | null> {
-    return this.store.get(key) || null;
+  async get(key: string): Promise<R2ObjectBody | null> {
+    const item = this.store.get(key);
+    if (!item) return null;
+
+    return {
+      key,
+      size: item.size,
+      httpMetadata: {
+        contentType: item.contentType,
+        cacheControl: 'private, max-age=3600'
+      },
+      arrayBuffer: async (): Promise<ArrayBuffer> => {
+        const copy = new Uint8Array(item.data.byteLength);
+        copy.set(item.data);
+        return copy.buffer as ArrayBuffer;
+      },
+      text: async () => {
+        return new TextDecoder().decode(item.data);
+      }
+    };
   }
 
-  async put(key: string, value: unknown): Promise<unknown> {
-    this.store.set(key, value);
-    return { key, size: 100 };
+  async put(
+    key: string,
+    value: unknown,
+    options?: { httpMetadata?: R2HttpMetadata }
+  ): Promise<{ key: string; size: number }> {
+    let uint8: Uint8Array;
+
+    if (value instanceof Uint8Array) {
+      uint8 = value;
+    } else if (value instanceof ArrayBuffer) {
+      uint8 = new Uint8Array(value);
+    } else if (typeof value === 'string') {
+      uint8 = new TextEncoder().encode(value);
+    } else if (Buffer.isBuffer(value)) {
+      uint8 = new Uint8Array(value);
+    } else {
+      uint8 = new Uint8Array();
+    }
+
+    const contentType = options?.httpMetadata?.contentType || 'application/octet-stream';
+
+    this.store.set(key, {
+      data: uint8,
+      contentType,
+      size: uint8.byteLength,
+      uploadedAt: new Date().toISOString()
+    });
+
+    return { key, size: uint8.byteLength };
   }
 
   async delete(key: string | string[]): Promise<void> {

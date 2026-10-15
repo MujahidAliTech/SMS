@@ -30,9 +30,22 @@ export interface D1Database {
   exec(query: string): Promise<{ count: number; duration: number }>;
 }
 
+export interface R2HttpMetadata {
+  contentType?: string;
+  cacheControl?: string;
+}
+
+export interface R2ObjectBody {
+  key: string;
+  size: number;
+  httpMetadata?: R2HttpMetadata;
+  arrayBuffer(): Promise<ArrayBuffer>;
+  text(): Promise<string>;
+}
+
 export interface R2Bucket {
-  get(key: string): Promise<unknown | null>;
-  put(key: string, value: unknown, options?: unknown): Promise<unknown>;
+  get(key: string): Promise<R2ObjectBody | null>;
+  put(key: string, value: unknown, options?: { httpMetadata?: R2HttpMetadata }): Promise<{ key: string; size: number }>;
   delete(key: string | string[]): Promise<void>;
 }
 

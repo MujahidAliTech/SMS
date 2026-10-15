@@ -80,6 +80,7 @@ export interface Student {
   previousSchool?: string;
   status: 'active' | 'inactive' | 'alumni' | 'struck_off';
   photoUrl?: string;
+  photoKey?: string;
   parentId: string;
   monthlyFee: number;
 }
@@ -115,6 +116,7 @@ export interface TeacherStaff {
   employmentStatus: 'active' | 'leave' | 'resigned';
   salaryMonthly: number; // PKR
   photoUrl?: string;
+  photoKey?: string;
 }
 
 export interface SchoolClass {

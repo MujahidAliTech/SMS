@@ -36,15 +36,18 @@ class ApiClient {
     const url = `${this.baseUrl}${cleanEndpoint}`;
 
     try {
+      const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
+      const headers: Record<string, string> = {
+        'Accept': 'application/json',
+        ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
+        ...(options.headers as Record<string, string> || {})
+      };
+
       const response = await fetch(url, {
         ...options,
         signal: controller.signal,
         credentials: 'include', // Automatically sends and receives HttpOnly session cookies
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          ...(options.headers || {})
-        }
+        headers
       });
 
       clearTimeout(timeoutId);
@@ -103,6 +106,10 @@ class ApiClient {
 
   public delete<T>(endpoint: string, headers?: Record<string, string>) {
     return this.request<T>(endpoint, { method: 'DELETE', headers });
+  }
+
+  public upload<T>(endpoint: string, formData: FormData, headers?: Record<string, string>) {
+    return this.request<T>(endpoint, { method: 'POST', body: formData, headers });
   }
 
   /**
