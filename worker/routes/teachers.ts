@@ -70,12 +70,26 @@ export function formatTeacherForRole(
     photoKey: row.photo_key || undefined
   };
 
-  // 1. School Admin, Principal & Super Admin: Complete access to salary & CNIC
-  if (['school_admin', 'principal', 'super_admin'].includes(userRole)) {
+  // 1. School Admin & Super Admin: Authorized access to salary & CNIC for administrative HR
+  if (['school_admin', 'super_admin'].includes(userRole)) {
     return {
       ...base,
       cnic: row.cnic,
       salaryMonthly: row.salary_monthly
+    };
+  }
+
+  // 1b. Principal: Academic leadership. Can view own compensation/CNIC, but colleagues' compensation is restricted
+  if (userRole === 'principal') {
+    if (isSelf) {
+      return {
+        ...base,
+        cnic: row.cnic,
+        salaryMonthly: row.salary_monthly
+      };
+    }
+    return {
+      ...base
     };
   }
 

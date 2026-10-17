@@ -3,7 +3,7 @@
 // Multi-Tenant School Management SaaS
 // ============================================================================
 
-import { SchoolClass, Student, TeacherStaff, AttendanceRecord, FeeInvoice, User, UserRole } from '../types';
+import { SchoolClass, Student, TeacherStaff, AttendanceRecord, AttendanceStatus, FeeInvoice, User, UserRole } from '../types';
 import { classService, studentService, teacherStaffService, attendanceService, feeService } from './index';
 import { apiClient } from './apiClient';
 import { MockStorageAdapter } from './storage';
@@ -640,5 +640,387 @@ export const userApiAdapter = {
     }
 
     return { message: 'Sessions revoked', revokedSessions: 1 };
+  }
+};
+
+export interface AttendanceRosterItem {
+  studentId: string;
+  studentName: string;
+  rollNo: string;
+  classId: string;
+  className: string;
+  sectionId: string;
+  sectionName: string;
+  date: string;
+  status: AttendanceStatus;
+  remarks?: string;
+  recordId?: string;
+  isRecorded: boolean;
+  updatedAt?: string;
+}
+
+export interface AttendanceRosterResponse {
+  classId: string;
+  sectionId: string;
+  date: string;
+  totalStudents: number;
+  presentCount: number;
+  absentCount: number;
+  lateCount: number;
+  leaveCount: number;
+  attendanceRate: number;
+  isMarked: boolean;
+  roster: AttendanceRosterItem[];
+}
+
+export interface StudentAttendanceHistoryResponse {
+  student: {
+    id: string;
+    name: string;
+    admissionNo: string;
+    rollNo: string;
+    className: string;
+    sectionName: string;
+  };
+  totalDays: number;
+  presentCount: number;
+  absentCount: number;
+  lateCount: number;
+  leaveCount: number;
+  attendanceRate: number;
+  records: Array<{
+    id: string;
+    tenantId: string;
+    date: string;
+    studentId: string;
+    studentName: string;
+    classId: string;
+    sectionId: string;
+    status: AttendanceStatus;
+    remarks?: string;
+    recordedByUserId?: string;
+    createdAt: string;
+    updatedAt?: string;
+  }>;
+}
+
+export interface AttendanceCorrectionEntry {
+  id: string;
+  attendance_record_id: string;
+  student_id: string;
+  student_name: string | null;
+  date: string;
+  old_status: string;
+  new_status: string;
+  old_remarks: string | null;
+  new_remarks: string | null;
+  reason: string | null;
+  changed_by_user_id: string;
+  changed_by_user_name: string | null;
+  created_at: string;
+}
+
+export const attendanceApiAdapter = {
+  async getClassAttendance(
+    params: { tenantId: string; classId: string; sectionId?: string; date: string },
+    mode: StorageMode = 'local_storage'
+  ): Promise<AttendanceRosterResponse> {
+    if (mode === 'cloudflare_d1') {
+      const q = new URLSearchParams();
+      q.set('tenantId', params.tenantId);
+      q.set('classId', params.classId);
+      if (params.sectionId && params.sectionId !== 'all') q.set('sectionId', params.sectionId);
+      q.set('date', params.date);
+
+      const { data, error } = await apiClient.get<AttendanceRosterResponse>(`/attendance?${q.toString()}`);
+      if (error || !data) {
+        if (error?.status === 401) {
+          throw new Error('Authentication required: Please log in to view attendance records.');
+        }
+        if (error?.status === 403) {
+          throw new Error(error.message || 'Access denied: You are not authorized to view attendance for this class.');
+        }
+        throw new Error(error?.message || 'Failed to fetch attendance roster from Cloudflare D1');
+      }
+      return data;
+    }
+
+    // Local Storage demo fallback
+    const allStudents = studentService.getAll(params.tenantId);
+    let classStudents = allStudents.filter(s => s.classId === params.classId && s.status === 'active');
+    if (params.sectionId && params.sectionId !== 'all') {
+      classStudents = classStudents.filter(s => 
+        s.sectionName.toLowerCase().includes(params.sectionId!.toLowerCase()) || 
+        s.sectionId.toLowerCase().includes(params.sectionId!.toLowerCase())
+      );
+    }
+    const existing = attendanceService.getRecords(params.tenantId, params.date, params.classId);
+    const existingMap = new Map(existing.map(e => [e.studentId, e]));
+
+    let present = 0, absent = 0, late = 0, leave = 0;
+    const roster: AttendanceRosterItem[] = classStudents.map(st => {
+      const ex = existingMap.get(st.id);
+      const status: AttendanceStatus = ex ? ex.status : 'present';
+      if (status === 'present') present++;
+      else if (status === 'absent') absent++;
+      else if (status === 'late') late++;
+      else if (status === 'leave') leave++;
+
+      return {
+        studentId: st.id,
+        studentName: st.name,
+        rollNo: st.rollNo,
+        classId: st.classId,
+        className: st.className,
+        sectionId: st.sectionId,
+        sectionName: st.sectionName,
+        date: params.date,
+        status,
+        remarks: ex?.remarks || undefined,
+        recordId: ex?.id || undefined,
+        isRecorded: !!ex
+      };
+    });
+
+    const total = roster.length;
+    return {
+      classId: params.classId,
+      sectionId: params.sectionId || 'all',
+      date: params.date,
+      totalStudents: total,
+      presentCount: present,
+      absentCount: absent,
+      lateCount: late,
+      leaveCount: leave,
+      attendanceRate: total > 0 ? Math.round(((present + late) / total) * 100) : 0,
+      isMarked: existing.length > 0,
+      roster
+    };
+  },
+
+  async saveBatchAttendance(
+    payload: {
+      tenantId: string;
+      classId: string;
+      sectionId?: string;
+      date: string;
+      records: Array<{
+        studentId: string;
+        status: AttendanceStatus;
+        remarks?: string;
+      }>;
+    },
+    mode: StorageMode = 'local_storage'
+  ): Promise<{ message: string; insertedCount: number; updatedCount: number; correctionCount: number }> {
+    if (mode === 'cloudflare_d1') {
+      const { data, error } = await apiClient.post<{
+        message: string;
+        classId: string;
+        date: string;
+        totalProcessed: number;
+        insertedCount: number;
+        updatedCount: number;
+        correctionCount: number;
+      }>('/attendance/batch', payload);
+
+      if (error || !data) {
+        if (error?.status === 401) {
+          throw new Error('Authentication required: Please log in to mark attendance.');
+        }
+        if (error?.status === 403) {
+          throw new Error(error.message || 'Access denied: You are not authorized to mark attendance for this class.');
+        }
+        throw new Error(error?.message || 'Failed to save attendance on Cloudflare D1');
+      }
+      return data;
+    }
+
+    // Local Storage demo fallback
+    const allStudents = studentService.getAll(payload.tenantId);
+    const recordsToSave: AttendanceRecord[] = payload.records.map(entry => {
+      const st = allStudents.find(s => s.id === entry.studentId);
+      return {
+        id: `att-${entry.studentId}-${payload.date}`,
+        tenantId: payload.tenantId,
+        date: payload.date,
+        studentId: entry.studentId,
+        studentName: st?.name || 'Student',
+        classId: payload.classId,
+        sectionId: payload.sectionId || st?.sectionId || 'sec-a',
+        status: entry.status,
+        remarks: entry.remarks || ''
+      };
+    });
+    attendanceService.saveRecords(payload.tenantId, recordsToSave);
+    return {
+      message: 'Attendance saved successfully (demo mode)',
+      insertedCount: recordsToSave.length,
+      updatedCount: 0,
+      correctionCount: 0
+    };
+  },
+
+  async getStudentAttendance(
+    studentId: string,
+    tenantId: string,
+    filters?: { month?: string; startDate?: string; endDate?: string },
+    mode: StorageMode = 'local_storage'
+  ): Promise<StudentAttendanceHistoryResponse> {
+    if (mode === 'cloudflare_d1') {
+      const q = new URLSearchParams();
+      q.set('tenantId', tenantId);
+      if (filters?.month) q.set('month', filters.month);
+      if (filters?.startDate && filters?.endDate) {
+        q.set('startDate', filters.startDate);
+        q.set('endDate', filters.endDate);
+      }
+
+      const { data, error } = await apiClient.get<StudentAttendanceHistoryResponse>(
+        `/attendance/student/${encodeURIComponent(studentId)}?${q.toString()}`
+      );
+
+      if (error || !data) {
+        if (error?.status === 401) {
+          throw new Error('Authentication required: Please log in to view attendance records.');
+        }
+        if (error?.status === 403) {
+          throw new Error(error.message || 'Access denied: You are not authorized to view this student\'s attendance.');
+        }
+        throw new Error(error?.message || 'Failed to load student attendance history from Cloudflare D1');
+      }
+      return data;
+    }
+
+    // Local Storage demo fallback
+    const st = studentService.getById(studentId) || studentService.getAll(tenantId)[0];
+    const history = attendanceService.getHistory(tenantId, studentId);
+    let present = 0, absent = 0, late = 0, leave = 0;
+    const records = history.map(h => {
+      if (h.status === 'present') present++;
+      else if (h.status === 'absent') absent++;
+      else if (h.status === 'late') late++;
+      else if (h.status === 'leave') leave++;
+      return {
+        id: h.id,
+        tenantId: h.tenantId,
+        date: h.date,
+        studentId: h.studentId,
+        studentName: h.studentName,
+        classId: h.classId,
+        sectionId: h.sectionId,
+        status: h.status,
+        remarks: h.remarks,
+        createdAt: new Date().toISOString()
+      };
+    });
+    const total = records.length;
+    return {
+      student: {
+        id: st ? st.id : studentId,
+        name: st ? st.name : 'Student',
+        admissionNo: st ? st.admissionNo : 'ADM-001',
+        rollNo: st ? st.rollNo : '01',
+        className: st ? st.className : 'Class 9',
+        sectionName: st ? st.sectionName : 'A'
+      },
+      totalDays: total,
+      presentCount: present,
+      absentCount: absent,
+      lateCount: late,
+      leaveCount: leave,
+      attendanceRate: total > 0 ? Math.round(((present + late) / total) * 100) : 0,
+      records
+    };
+  },
+
+  async getAttendanceSummary(
+    tenantId: string,
+    date?: string,
+    mode: StorageMode = 'local_storage'
+  ): Promise<{
+    date: string;
+    overall: {
+      totalMarked: number;
+      present: number;
+      absent: number;
+      late: number;
+      leave: number;
+      rate: number;
+    };
+    classes: Array<{
+      classId: string;
+      className: string;
+      isMarked: boolean;
+      totalMarked: number;
+      present: number;
+      absent: number;
+      late: number;
+      leave: number;
+      rate: number;
+    }>;
+  }> {
+    if (mode === 'cloudflare_d1') {
+      const q = new URLSearchParams();
+      q.set('tenantId', tenantId);
+      if (date) q.set('date', date);
+
+      const { data, error } = await apiClient.get<any>(`/attendance/summary?${q.toString()}`);
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to fetch attendance summary from Cloudflare D1');
+      }
+      return data;
+    }
+
+    return {
+      date: date || new Date().toISOString().split('T')[0],
+      overall: { totalMarked: 100, present: 90, absent: 5, late: 3, leave: 2, rate: 93 },
+      classes: []
+    };
+  },
+
+  async correctAttendanceRecord(
+    recordId: string,
+    payload: {
+      tenantId: string;
+      newStatus: AttendanceStatus;
+      newRemarks?: string;
+      reason?: string;
+    },
+    mode: StorageMode = 'local_storage'
+  ): Promise<{ message: string; correctionId: string; record: any }> {
+    if (mode === 'cloudflare_d1') {
+      const { data, error } = await apiClient.post<any>(`/attendance/${encodeURIComponent(recordId)}/correct`, payload);
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to correct attendance record on Cloudflare D1');
+      }
+      return data;
+    }
+
+    return {
+      message: 'Attendance corrected in demo mode',
+      correctionId: `corr-${Date.now()}`,
+      record: { id: recordId, status: payload.newStatus }
+    };
+  },
+
+  async getAttendanceCorrections(
+    tenantId: string,
+    filters?: { date?: string; studentId?: string },
+    mode: StorageMode = 'local_storage'
+  ): Promise<AttendanceCorrectionEntry[]> {
+    if (mode === 'cloudflare_d1') {
+      const q = new URLSearchParams();
+      q.set('tenantId', tenantId);
+      if (filters?.date) q.set('date', filters.date);
+      if (filters?.studentId) q.set('studentId', filters.studentId);
+
+      const { data, error } = await apiClient.get<AttendanceCorrectionEntry[]>(`/attendance/corrections?${q.toString()}`);
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to load attendance correction audit logs');
+      }
+      return data;
+    }
+
+    return [];
   }
 };

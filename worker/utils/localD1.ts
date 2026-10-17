@@ -116,8 +116,17 @@ export class LocalD1Database implements D1Database {
           console.log('[Local D1] Applying migration 0003 for teachers_staff.photo_key...');
           this.db.exec('ALTER TABLE teachers_staff ADD COLUMN photo_key TEXT;');
         }
+
+        // Check if attendance_records has recorded_by_user_id
+        const attendanceCols = this.db.prepare("PRAGMA table_info('attendance_records')").all() as { name: string }[];
+        const hasRecordedBy = attendanceCols.some(c => c.name === 'recorded_by_user_id');
+        if (!hasRecordedBy) {
+          console.log('[Local D1] Applying migration 0004 for attendance_records & attendance_corrections...');
+          const migration4 = fs.readFileSync(path.resolve(process.cwd(), 'migrations/0004_attendance_audit_and_fields.sql'), 'utf8');
+          this.db.exec(migration4);
+        }
       } catch (err) {
-        console.warn('[Local D1] Check for photo_key column skipped or error:', err);
+        console.warn('[Local D1] Migration step warning/error:', err);
       }
     } catch (err) {
       console.error('[Local D1] Error applying migrations:', err);

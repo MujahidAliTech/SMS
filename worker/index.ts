@@ -43,6 +43,14 @@ import {
   handleResetPassword,
   handleRevokeSessions
 } from './routes/users';
+import {
+  handleGetAttendance,
+  handleSaveBatchAttendance,
+  handleGetStudentAttendance,
+  handleGetAttendanceSummary,
+  handleCorrectAttendance,
+  handleGetAttendanceCorrections
+} from './routes/attendance';
 
 function handleCors(request: Request): Response | null {
   const origin = request.headers.get('Origin');
@@ -238,6 +246,34 @@ export default {
       if (path.startsWith('/api/v1/users/') && method === 'PUT') {
         const userId = path.replace('/api/v1/users/', '').split('/')[0];
         return await handleUpdateUser(userId, request, env);
+      }
+
+      // ----------------------------------------------------------------------
+      // Attendance Endpoints (Tenant-Scoped, Audited Daily Roll Call)
+      // ----------------------------------------------------------------------
+      if (path === '/api/v1/attendance/summary' && method === 'GET') {
+        return await handleGetAttendanceSummary(request, env);
+      }
+      if (path === '/api/v1/attendance/corrections' && method === 'GET') {
+        return await handleGetAttendanceCorrections(request, env);
+      }
+      if (path.startsWith('/api/v1/attendance/student/') && method === 'GET') {
+        const studentId = path.replace('/api/v1/attendance/student/', '').split('/')[0];
+        return await handleGetStudentAttendance(studentId, request, env);
+      }
+      if (path === '/api/v1/attendance/batch' && method === 'POST') {
+        return await handleSaveBatchAttendance(request, env);
+      }
+      if (path === '/api/v1/attendance' && method === 'POST') {
+        return await handleSaveBatchAttendance(request, env);
+      }
+      if (path.startsWith('/api/v1/attendance/') && (path.endsWith('/correct') || method === 'PUT')) {
+        const parts = path.replace('/api/v1/attendance/', '').split('/');
+        const recordId = parts[0];
+        return await handleCorrectAttendance(recordId, request, env);
+      }
+      if (path === '/api/v1/attendance' && method === 'GET') {
+        return await handleGetAttendance(request, env);
       }
 
       // ----------------------------------------------------------------------

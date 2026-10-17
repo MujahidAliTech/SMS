@@ -21,6 +21,7 @@ import {
 } from '../../types';
 import { FeeReceiptModal } from '../../components/print/FeeReceiptModal';
 import { ReportCardModal } from '../../components/print/ReportCardModal';
+import { attendanceApiAdapter, StudentAttendanceHistoryResponse } from '../../services/dataAdapter';
 import {
   Users,
   GraduationCap,
@@ -49,7 +50,7 @@ import {
    ========================================================================= */
 
 export const ParentPortal: React.FC = () => {
-  const { currentTenant, currentUser, toast } = useApp();
+  const { currentTenant, currentUser, storageMode, toast } = useApp();
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -116,7 +117,25 @@ export const ParentPortal: React.FC = () => {
 
   const currentResult = childResults.find(r => r.examId === selectedExamId) || childResults[0];
 
-  // Attendance mock summary for active child
+  // Dynamic D1 Attendance state for active child
+  const [d1Attendance, setD1Attendance] = useState<StudentAttendanceHistoryResponse | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    async function loadAttendance() {
+      if (!activeChild?.id) return;
+      try {
+        const res = await attendanceApiAdapter.getStudentAttendance(activeChild.id, currentTenant.id, undefined, storageMode);
+        if (isMounted) setD1Attendance(res);
+      } catch (err) {
+        console.warn('Failed to load child attendance:', err);
+      }
+    }
+    loadAttendance();
+    return () => { isMounted = false; };
+  }, [activeChild?.id, currentTenant.id, storageMode]);
+
+  // Attendance mock summary fallback for active child
   const attendanceDays = [
     { date: '2026-11-20', day: 'Friday', status: 'present', remarks: 'Present on time' },
     { date: '2026-11-19', day: 'Thursday', status: 'present', remarks: 'Present on time' },
@@ -350,28 +369,38 @@ export const ParentPortal: React.FC = () => {
           <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs text-center">
               <span className="text-[10px] font-bold uppercase text-slate-400">Total Working Days</span>
-              <p className="text-xl font-bold text-slate-900 mt-1">20</p>
-              <span className="text-[10px] text-slate-500">November 2026</span>
+              <p className="text-xl font-bold text-slate-900 mt-1">
+                {d1Attendance ? d1Attendance.totalDays : 20}
+              </p>
+              <span className="text-[10px] text-slate-500">Academic Session</span>
             </div>
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs text-center">
               <span className="text-[10px] font-bold uppercase text-emerald-700">Days Present</span>
-              <p className="text-xl font-bold text-emerald-700 mt-1">18</p>
-              <span className="text-[10px] text-emerald-800">90% Punctual</span>
+              <p className="text-xl font-bold text-emerald-700 mt-1">
+                {d1Attendance ? d1Attendance.presentCount : 18}
+              </p>
+              <span className="text-[10px] text-emerald-800 font-semibold">Punctual</span>
             </div>
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs text-center">
               <span className="text-[10px] font-bold uppercase text-rose-700">Days Absent</span>
-              <p className="text-xl font-bold text-rose-700 mt-1">1</p>
+              <p className="text-xl font-bold text-rose-700 mt-1">
+                {d1Attendance ? d1Attendance.absentCount : 1}
+              </p>
               <span className="text-[10px] text-slate-500">Unexcused</span>
             </div>
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs text-center">
               <span className="text-[10px] font-bold uppercase text-amber-700">Late Arrivals</span>
-              <p className="text-xl font-bold text-amber-700 mt-1">1</p>
-              <span className="text-[10px] text-slate-500">15 mins late</span>
+              <p className="text-xl font-bold text-amber-700 mt-1">
+                {d1Attendance ? d1Attendance.lateCount : 1}
+              </p>
+              <span className="text-[10px] text-slate-500">Morning Gate</span>
             </div>
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs text-center">
               <span className="text-[10px] font-bold uppercase text-blue-700">Approved Leaves</span>
-              <p className="text-xl font-bold text-blue-700 mt-1">1</p>
-              <span className="text-[10px] text-slate-500">Medical</span>
+              <p className="text-xl font-bold text-blue-700 mt-1">
+                {d1Attendance ? d1Attendance.leaveCount : 1}
+              </p>
+              <span className="text-[10px] text-slate-500">Sanctioned</span>
             </div>
           </div>
 
@@ -379,17 +408,23 @@ export const ParentPortal: React.FC = () => {
           <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-xs space-y-3">
             <div className="flex items-center justify-between text-xs">
               <span className="font-bold text-slate-900">Monthly Attendance Rate ({activeChild.name})</span>
-              <span className="font-bold text-emerald-700 font-mono">92.5% Attendance</span>
+              <span className="font-bold text-emerald-700 font-mono">
+                {d1Attendance ? `${d1Attendance.attendanceRate}% Attendance` : '92.5% Attendance'}
+              </span>
             </div>
             <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden flex">
-              <div className="bg-emerald-600 h-full" style={{ width: '90%' }} title="Present: 90%" />
-              <div className="bg-amber-500 h-full" style={{ width: '5%' }} title="Late: 5%" />
-              <div className="bg-blue-500 h-full" style={{ width: '5%' }} title="Leave: 5%" />
+              <div 
+                className="bg-emerald-600 h-full" 
+                style={{ width: `${d1Attendance ? d1Attendance.attendanceRate : 90}%` }} 
+                title="Present" 
+              />
+              <div className="bg-amber-500 h-full" style={{ width: '5%' }} title="Late" />
+              <div className="bg-blue-500 h-full" style={{ width: '5%' }} title="Leave" />
             </div>
             <div className="flex items-center gap-4 text-[11px] text-slate-500 pt-1">
-              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-emerald-600 inline-block" /> Present (90%)</span>
-              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-amber-500 inline-block" /> Late (5%)</span>
-              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-blue-500 inline-block" /> Approved Leave (5%)</span>
+              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-emerald-600 inline-block" /> Present ({d1Attendance ? d1Attendance.attendanceRate : 90}%)</span>
+              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-amber-500 inline-block" /> Late</span>
+              <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-blue-500 inline-block" /> Approved Leave</span>
             </div>
           </div>
 
@@ -398,9 +433,9 @@ export const ParentPortal: React.FC = () => {
             <div className="flex items-center justify-between pb-2 border-b border-slate-100">
               <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
                 <CalendarCheck className="w-4 h-4 text-teal-700" />
-                <span>Daily Roll Call History (November 2026)</span>
+                <span>Daily Roll Call History ({activeChild.className})</span>
               </h3>
-              <span className="text-xs text-slate-400 font-mono">Class: {activeChild.className}</span>
+              <span className="text-xs text-slate-400 font-mono">Child: {activeChild.name}</span>
             </div>
 
             <div className="overflow-x-auto">
@@ -414,10 +449,10 @@ export const ParentPortal: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {attendanceDays.map((rec, idx) => (
+                  {(d1Attendance && d1Attendance.records.length > 0 ? d1Attendance.records : attendanceDays).map((rec, idx) => (
                     <tr key={idx} className="hover:bg-slate-50/60">
                       <td className="py-2.5 px-3 font-mono font-medium text-slate-800">{rec.date}</td>
-                      <td className="py-2.5 px-3 text-slate-600">{rec.day}</td>
+                      <td className="py-2.5 px-3 text-slate-600">{'day' in rec ? (rec as any).day : new Date(rec.date).toLocaleDateString('en-PK', { weekday: 'long' })}</td>
                       <td className="py-2.5 px-3">
                         <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase inline-flex items-center gap-1 ${
                           rec.status === 'present'
@@ -431,7 +466,7 @@ export const ParentPortal: React.FC = () => {
                           {rec.status}
                         </span>
                       </td>
-                      <td className="py-2.5 px-3 text-slate-600">{rec.remarks}</td>
+                      <td className="py-2.5 px-3 text-slate-600">{rec.remarks || 'Standard roll call'}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -822,7 +857,7 @@ export const ParentPortal: React.FC = () => {
    ========================================================================= */
 
 export const StudentPortal: React.FC = () => {
-  const { currentTenant, currentUser, toast } = useApp();
+  const { currentTenant, currentUser, storageMode, toast } = useApp();
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -874,8 +909,25 @@ export const StudentPortal: React.FC = () => {
   });
 
   const [selectedDay, setSelectedDay] = useState<string>('Monday');
-
   const pendingDues = studentInvoices.reduce((sum, inv) => sum + inv.balance, 0);
+
+  // Dynamic D1 Attendance state for student
+  const [d1Attendance, setD1Attendance] = useState<StudentAttendanceHistoryResponse | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    async function loadAttendance() {
+      if (!student?.id) return;
+      try {
+        const res = await attendanceApiAdapter.getStudentAttendance(student.id, currentTenant.id, undefined, storageMode);
+        if (isMounted) setD1Attendance(res);
+      } catch (err) {
+        console.warn('Failed to load student attendance:', err);
+      }
+    }
+    loadAttendance();
+    return () => { isMounted = false; };
+  }, [student?.id, currentTenant.id, storageMode]);
 
   return (
     <div className="space-y-6">
@@ -1142,18 +1194,26 @@ export const StudentPortal: React.FC = () => {
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs text-center">
               <span className="text-[11px] text-slate-400 font-semibold uppercase">Total Attendance</span>
-              <p className="text-2xl font-bold text-emerald-700 mt-1">94%</p>
+              <p className="text-2xl font-bold text-emerald-700 mt-1">
+                {d1Attendance ? `${d1Attendance.attendanceRate}%` : '94%'}
+              </p>
               <span className="text-[10px] text-slate-500">Term Average</span>
             </div>
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs text-center">
               <span className="text-[11px] text-slate-400 font-semibold uppercase">Classes Attended</span>
-              <p className="text-2xl font-bold text-slate-900 mt-1">112 / 120</p>
+              <p className="text-2xl font-bold text-slate-900 mt-1">
+                {d1Attendance ? `${d1Attendance.presentCount + d1Attendance.lateCount} / ${d1Attendance.totalDays || 1}` : '112 / 120'}
+              </p>
               <span className="text-[10px] text-emerald-700 font-semibold">Eligible for Board Exams</span>
             </div>
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs text-center">
               <span className="text-[11px] text-slate-400 font-semibold uppercase">Absences Recorded</span>
-              <p className="text-2xl font-bold text-rose-700 mt-1">4 Days</p>
-              <span className="text-[10px] text-slate-500">4 Medical Leaves</span>
+              <p className="text-2xl font-bold text-rose-700 mt-1">
+                {d1Attendance ? `${d1Attendance.absentCount} Days` : '4 Days'}
+              </p>
+              <span className="text-[10px] text-slate-500">
+                {d1Attendance ? `${d1Attendance.leaveCount} Medical Leaves` : '4 Medical Leaves'}
+              </span>
             </div>
           </div>
 
@@ -1164,19 +1224,19 @@ export const StudentPortal: React.FC = () => {
             </h3>
 
             <div className="space-y-2 text-xs">
-              {[
-                { date: '2026-11-20', status: 'present', note: 'Morning roll call recorded' },
-                { date: '2026-11-19', status: 'present', note: 'Morning roll call recorded' },
-                { date: '2026-11-18', status: 'present', note: 'Morning roll call recorded' },
-                { date: '2026-11-17', status: 'late', note: 'Arrived 15 mins late' },
-                { date: '2026-11-16', status: 'present', note: 'Morning roll call recorded' },
-                { date: '2026-11-13', status: 'present', note: 'Morning roll call recorded' },
-                { date: '2026-11-12', status: 'leave', note: 'Approved sick leave' }
-              ].map((log, i) => (
+              {(d1Attendance && d1Attendance.records.length > 0 ? d1Attendance.records : [
+                { date: '2026-11-20', status: 'present', remarks: 'Morning roll call recorded' },
+                { date: '2026-11-19', status: 'present', remarks: 'Morning roll call recorded' },
+                { date: '2026-11-18', status: 'present', remarks: 'Morning roll call recorded' },
+                { date: '2026-11-17', status: 'late', remarks: 'Arrived 15 mins late' },
+                { date: '2026-11-16', status: 'present', remarks: 'Morning roll call recorded' },
+                { date: '2026-11-13', status: 'present', remarks: 'Morning roll call recorded' },
+                { date: '2026-11-12', status: 'leave', remarks: 'Approved sick leave' }
+              ]).map((log, i) => (
                 <div key={i} className="p-3 rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     <span className="font-mono font-medium text-slate-900">{log.date}</span>
-                    <span className="text-slate-500">{log.note}</span>
+                    <span className="text-slate-500">{(log as any).remarks || (log as any).note || 'Morning roll call recorded'}</span>
                   </div>
                   <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
                     log.status === 'present' ? 'bg-emerald-100 text-emerald-800' : log.status === 'late' ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'

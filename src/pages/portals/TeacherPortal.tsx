@@ -24,6 +24,7 @@ import {
 import { Modal } from '../../components/common/Modal';
 import { ConfirmModal } from '../../components/common/ConfirmModal';
 import { ReportCardModal } from '../../components/print/ReportCardModal';
+import { attendanceApiAdapter } from '../../services/dataAdapter';
 import {
   CalendarCheck,
   BookOpen,
@@ -52,7 +53,7 @@ import {
 } from 'lucide-react';
 
 export const TeacherPortal: React.FC = () => {
-  const { currentTenant, currentUser, toast } = useApp();
+  const { currentTenant, currentUser, storageMode, toast } = useApp();
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -156,37 +157,41 @@ export const TeacherPortal: React.FC = () => {
     toast(`All ${classStudents.length} students marked as ${st.toUpperCase()}`, 'info');
   };
 
-  const handleSaveAttendance = () => {
-    const records: AttendanceRecord[] = classStudents.map(s => ({
-      id: `att-${selectedClassId}-${s.id}-${attendanceDate}`,
-      tenantId: currentTenant.id,
-      studentId: s.id,
-      studentName: s.name,
-      classId: selectedClassId,
-      sectionId: s.sectionId,
-      date: attendanceDate,
-      status: statusMap[s.id] || 'present',
-      markedBy: currentUser.name
-    }));
+  const handleSaveAttendance = async () => {
+    try {
+      const records = classStudents.map(s => ({
+        studentId: s.id,
+        status: statusMap[s.id] || 'present',
+        remarks: ''
+      }));
 
-    attendanceService.saveRecords(currentTenant.id, records);
-
-    const presentCount = classStudents.filter(s => (statusMap[s.id] || 'present') === 'present').length;
-    const absentCount = classStudents.length - presentCount;
-
-    setAttendanceHistoryLogs(prev => [
-      {
+      await attendanceApiAdapter.saveBatchAttendance({
+        tenantId: currentTenant.id,
+        classId: selectedClassId,
+        sectionId: attendanceSection !== 'All' ? attendanceSection : undefined,
         date: attendanceDate,
-        className: selectedClass?.name || 'Class 9',
-        total: classStudents.length,
-        present: presentCount,
-        absent: absentCount,
-        savedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      },
-      ...prev
-    ]);
+        records
+      }, storageMode);
 
-    toast(`Attendance for ${selectedClass?.name} saved! (${presentCount} Present, ${absentCount} Absent)`, 'success');
+      const presentCount = classStudents.filter(s => (statusMap[s.id] || 'present') === 'present').length;
+      const absentCount = classStudents.length - presentCount;
+
+      setAttendanceHistoryLogs(prev => [
+        {
+          date: attendanceDate,
+          className: selectedClass?.name || 'Class 9',
+          total: classStudents.length,
+          present: presentCount,
+          absent: absentCount,
+          savedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        },
+        ...prev
+      ]);
+
+      toast(`Attendance for ${selectedClass?.name} saved! (${presentCount} Present, ${absentCount} Absent)`, 'success');
+    } catch (err) {
+      toast((err as Error).message || 'Failed to save attendance', 'error');
+    }
   };
 
   // ==================== HOMEWORK MODALS & CRUD ====================
