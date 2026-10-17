@@ -34,6 +34,15 @@ import {
   handleDeleteProfilePicture,
   handleGetProfilePicture
 } from './routes/media';
+import {
+  handleGetUsers,
+  handleGetUserById,
+  handleCreateUser,
+  handleUpdateUser,
+  handleUpdateUserStatus,
+  handleResetPassword,
+  handleRevokeSessions
+} from './routes/users';
 
 function handleCors(request: Request): Response | null {
   const origin = request.headers.get('Origin');
@@ -196,6 +205,39 @@ export default {
         if ((entityType === 'students' || entityType === 'teachers') && entityId) {
           return await handleGetProfilePicture(entityType, entityId, request, env);
         }
+      }
+
+      // ----------------------------------------------------------------------
+      // User Management Endpoints (Admin RBAC)
+      // ----------------------------------------------------------------------
+      if (path === '/api/v1/users' && method === 'GET') {
+        return await handleGetUsers(request, env);
+      }
+      if (path === '/api/v1/users' && method === 'POST') {
+        return await handleCreateUser(request, env);
+      }
+      if (path.startsWith('/api/v1/users/') && path.endsWith('/status') && (method === 'PATCH' || method === 'PUT')) {
+        const parts = path.split('/');
+        const userId = parts[4];
+        return await handleUpdateUserStatus(userId, request, env);
+      }
+      if (path.startsWith('/api/v1/users/') && path.endsWith('/reset-password') && method === 'POST') {
+        const parts = path.split('/');
+        const userId = parts[4];
+        return await handleResetPassword(userId, request, env);
+      }
+      if (path.startsWith('/api/v1/users/') && path.endsWith('/revoke-sessions') && method === 'POST') {
+        const parts = path.split('/');
+        const userId = parts[4];
+        return await handleRevokeSessions(userId, request, env);
+      }
+      if (path.startsWith('/api/v1/users/') && method === 'GET') {
+        const userId = path.replace('/api/v1/users/', '').split('/')[0];
+        return await handleGetUserById(userId, request, env);
+      }
+      if (path.startsWith('/api/v1/users/') && method === 'PUT') {
+        const userId = path.replace('/api/v1/users/', '').split('/')[0];
+        return await handleUpdateUser(userId, request, env);
       }
 
       // ----------------------------------------------------------------------

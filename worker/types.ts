@@ -58,13 +58,15 @@ export interface Env {
   JWT_SECRET?: string;
 }
 
+export type UserRole = 'super_admin' | 'school_admin' | 'principal' | 'teacher' | 'accountant' | 'parent' | 'student';
+
 export interface AuthUser {
   id: string;
   tenantId: string | null;
   name: string;
   email: string;
   phone: string | null;
-  role: 'super_admin' | 'school_admin' | 'principal' | 'teacher' | 'accountant' | 'parent' | 'student';
+  role: UserRole;
   avatarUrl: string | null;
   linkedEntityId: string | null;
 }

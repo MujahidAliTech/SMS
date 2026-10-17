@@ -43,6 +43,9 @@ export const SchoolAdminLayout: React.FC = () => {
     navigate('/login');
   };
 
+  const canManageUsers = ['school_admin', 'super_admin'].includes(currentUser.role);
+  const canManageBillingAndSettings = ['school_admin', 'super_admin'].includes(currentUser.role);
+
   const menuItems = [
     { label: 'Dashboard', path: '/school/dashboard', icon: LayoutDashboard },
     { label: 'Students', path: '/school/students', icon: GraduationCap },
@@ -60,8 +63,11 @@ export const SchoolAdminLayout: React.FC = () => {
     { label: 'Events & Calendar', path: '/school/events', icon: Calendar },
     { label: 'Reports & Exports', path: '/school/reports', icon: FileBarChart },
     { label: 'Public Website', path: '/school/website-settings', icon: Globe },
-    { label: 'Subscription Plan', path: '/school/subscription', icon: Award },
-    { label: 'School Settings', path: '/school/settings', icon: Settings }
+    ...(canManageUsers ? [{ label: 'User Accounts', path: '/school/users', icon: ShieldCheck }] : []),
+    ...(canManageBillingAndSettings ? [
+      { label: 'Subscription Plan', path: '/school/subscription', icon: Award },
+      { label: 'School Settings', path: '/school/settings', icon: Settings }
+    ] : [])
   ];
 
   return (

@@ -3,9 +3,10 @@
 // Multi-Tenant School Management SaaS
 // ============================================================================
 
-import { SchoolClass, Student, TeacherStaff, AttendanceRecord, FeeInvoice } from '../types';
+import { SchoolClass, Student, TeacherStaff, AttendanceRecord, FeeInvoice, User, UserRole } from '../types';
 import { classService, studentService, teacherStaffService, attendanceService, feeService } from './index';
 import { apiClient } from './apiClient';
+import { MockStorageAdapter } from './storage';
 
 /**
  * Backend Data Mode:
@@ -433,5 +434,211 @@ export const teacherStaffApiAdapter = {
     }
 
     teacherStaffService.update(id, { photoUrl: undefined });
+  }
+};
+
+export interface ManagedUser {
+  id: string;
+  tenantId?: string;
+  name: string;
+  email: string;
+  phone?: string;
+  role: UserRole;
+  avatarUrl?: string;
+  linkedEntityId?: string;
+  isActive: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export const userApiAdapter = {
+  async getUsers(
+    tenantId: string,
+    filters?: { search?: string; role?: string; status?: string },
+    mode: StorageMode = 'local_storage'
+  ): Promise<ManagedUser[]> {
+    if (mode === 'cloudflare_d1') {
+      const params = new URLSearchParams();
+      params.set('tenantId', tenantId);
+      if (filters?.search) params.set('search', filters.search);
+      if (filters?.role) params.set('role', filters.role);
+      if (filters?.status) params.set('status', filters.status);
+
+      const { data, error } = await apiClient.get<ManagedUser[]>(`/users?${params.toString()}`);
+      if (error) {
+        if (error.status === 401) {
+          throw new Error('Authentication required: Please log in with a school administrator account.');
+        }
+        if (error.status === 403) {
+          throw new Error('Access denied: Only school administrators can view system user accounts.');
+        }
+        throw new Error(error.message || 'Failed to load user accounts from Cloudflare D1');
+      }
+      return data || [];
+    }
+
+    // Local Storage fallback
+    const all = MockStorageAdapter.getUsers();
+    let filtered = all.filter(u => !u.tenantId || u.tenantId === tenantId);
+    if (filters?.role && filters.role !== 'all') {
+      filtered = filtered.filter(u => u.role === filters.role);
+    }
+    if (filters?.search) {
+      const s = filters.search.toLowerCase();
+      filtered = filtered.filter(u => u.name.toLowerCase().includes(s) || u.email.toLowerCase().includes(s));
+    }
+    return filtered.map(u => ({
+      ...u,
+      isActive: true,
+      createdAt: new Date().toISOString()
+    }));
+  },
+
+  async getUserById(
+    userId: string,
+    tenantId: string,
+    mode: StorageMode = 'local_storage'
+  ): Promise<ManagedUser> {
+    if (mode === 'cloudflare_d1') {
+      const { data, error } = await apiClient.get<ManagedUser>(`/users/${encodeURIComponent(userId)}?tenantId=${encodeURIComponent(tenantId)}`);
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to load user profile');
+      }
+      return data;
+    }
+
+    const user = MockStorageAdapter.getUsers().find(u => u.id === userId);
+    if (!user) throw new Error('User not found');
+    return { ...user, isActive: true };
+  },
+
+  async createUser(
+    userData: {
+      tenantId: string;
+      name: string;
+      email: string;
+      phone?: string;
+      role: UserRole;
+      password: string;
+      linkedEntityId?: string;
+    },
+    mode: StorageMode = 'local_storage'
+  ): Promise<ManagedUser> {
+    if (mode === 'cloudflare_d1') {
+      const { data, error } = await apiClient.post<ManagedUser>('/users', userData);
+      if (error || !data) {
+        if (error?.status === 401) {
+          throw new Error('Authentication required: Please log in with an administrator account.');
+        }
+        if (error?.status === 403) {
+          throw new Error(error.message || 'Access denied: You are not authorized to create user accounts.');
+        }
+        if (error?.status === 409) {
+          throw new Error(error.message || 'An account with this email address already exists.');
+        }
+        throw new Error(error?.message || 'Failed to create user account on Cloudflare D1');
+      }
+      return data;
+    }
+
+    const newUser: User = {
+      id: `user-${Date.now()}`,
+      tenantId: userData.tenantId,
+      name: userData.name,
+      email: userData.email,
+      phone: userData.phone || '',
+      role: userData.role,
+      linkedEntityId: userData.linkedEntityId
+    };
+    const current = MockStorageAdapter.getUsers();
+    MockStorageAdapter.setUsers([newUser, ...current]);
+    return { ...newUser, isActive: true, createdAt: new Date().toISOString() };
+  },
+
+  async updateUser(
+    userId: string,
+    updates: {
+      tenantId: string;
+      name?: string;
+      phone?: string;
+      role?: UserRole;
+      linkedEntityId?: string;
+    },
+    mode: StorageMode = 'local_storage'
+  ): Promise<ManagedUser> {
+    if (mode === 'cloudflare_d1') {
+      const { data, error } = await apiClient.put<ManagedUser>(`/users/${encodeURIComponent(userId)}`, updates);
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to update user account');
+      }
+      return data;
+    }
+
+    const current = MockStorageAdapter.getUsers();
+    const idx = current.findIndex(u => u.id === userId);
+    if (idx >= 0) {
+      current[idx] = { ...current[idx], ...updates };
+      MockStorageAdapter.setUsers(current);
+      return { ...current[idx], isActive: true };
+    }
+    throw new Error('User not found');
+  },
+
+  async updateUserStatus(
+    userId: string,
+    isActive: boolean,
+    tenantId: string,
+    mode: StorageMode = 'local_storage'
+  ): Promise<{ id: string; isActive: boolean }> {
+    if (mode === 'cloudflare_d1') {
+      const { data, error } = await apiClient.patch<{ id: string; isActive: boolean }>(
+        `/users/${encodeURIComponent(userId)}/status`,
+        { tenantId, isActive }
+      );
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to update user account status');
+      }
+      return data;
+    }
+
+    return { id: userId, isActive };
+  },
+
+  async resetPassword(
+    userId: string,
+    password: string,
+    tenantId: string,
+    mode: StorageMode = 'local_storage'
+  ): Promise<{ message: string }> {
+    if (mode === 'cloudflare_d1') {
+      const { data, error } = await apiClient.post<{ message: string; revokedSessions?: number }>(
+        `/users/${encodeURIComponent(userId)}/reset-password`,
+        { tenantId, password }
+      );
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to reset password');
+      }
+      return data;
+    }
+
+    return { message: 'Password reset successfully in demo mode' };
+  },
+
+  async revokeSessions(
+    userId: string,
+    tenantId: string,
+    mode: StorageMode = 'local_storage'
+  ): Promise<{ message: string; revokedSessions: number }> {
+    if (mode === 'cloudflare_d1') {
+      const { data, error } = await apiClient.post<{ message: string; revokedSessions: number }>(
+        `/users/${encodeURIComponent(userId)}/revoke-sessions?tenantId=${encodeURIComponent(tenantId)}`
+      );
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to revoke user sessions');
+      }
+      return data;
+    }
+
+    return { message: 'Sessions revoked', revokedSessions: 1 };
   }
 };

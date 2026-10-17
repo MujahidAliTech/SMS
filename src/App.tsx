@@ -39,6 +39,7 @@ import {
 import { SchoolDashboard } from './pages/school/SchoolDashboard';
 import { StudentsListPage } from './pages/school/StudentsListPage';
 import { ParentsListPage, TeachersStaffListPage } from './pages/school/ParentsAndStaffPages';
+import { UserManagementPage } from './pages/school/UserManagementPage';
 import { ClassesSectionsListPage, SubjectsListPage } from './pages/school/ClassesAndSubjectsPages';
 import { AttendancePage } from './pages/school/AttendancePage';
 import { FeeInvoicesListPage } from './pages/school/FeeInvoicesListPage';
@@ -111,6 +112,7 @@ export default function App() {
             <Route path="website-settings" element={<WebsiteSettingsPage />} />
             <Route path="subscription" element={<SubscriptionPage />} />
             <Route path="settings" element={<SchoolSettingsPage />} />
+            <Route path="users" element={<UserManagementPage />} />
           </Route>
 
           {/* Teacher Portal */}
