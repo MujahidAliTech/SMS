@@ -3,7 +3,7 @@
 // Multi-Tenant School Management SaaS
 // ============================================================================
 
-import { SchoolClass, Student, TeacherStaff, AttendanceRecord, AttendanceStatus, FeeInvoice, User, UserRole } from '../types';
+import { SchoolClass, Student, TeacherStaff, AttendanceRecord, AttendanceStatus, FeeInvoice, FeePayment, FeeHeadItem, FeeStructureItem, FeeAuditLogEntry, User, UserRole } from '../types';
 import { classService, studentService, teacherStaffService, attendanceService, feeService } from './index';
 import { apiClient } from './apiClient';
 import { MockStorageAdapter } from './storage';
@@ -1017,6 +1017,486 @@ export const attendanceApiAdapter = {
       const { data, error } = await apiClient.get<AttendanceCorrectionEntry[]>(`/attendance/corrections?${q.toString()}`);
       if (error || !data) {
         throw new Error(error?.message || 'Failed to load attendance correction audit logs');
+      }
+      return data;
+    }
+
+    return [];
+  }
+};
+
+/**
+ * Production-ready Fees, Invoices, Challans, Payments & Financial Reports API Adapter
+ * Connects directly to Cloudflare D1 fee endpoints with role scoping and audit tracking.
+ */
+export const feeApiAdapter = {
+  async getFeeHeads(tenantId: string, mode: StorageMode = 'local_storage'): Promise<FeeHeadItem[]> {
+    if (mode === 'cloudflare_d1') {
+      const { data, error } = await apiClient.get<FeeHeadItem[]>(`/fees/heads?tenantId=${encodeURIComponent(tenantId)}`);
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to fetch fee heads from Cloudflare D1');
+      }
+      return data;
+    }
+    // Local demo fee heads
+    return [
+      { id: 'fh-tuition', tenantId, name: 'Monthly Tuition Fee', code: 'TUIT', isRecurring: true, defaultAmount: 5000, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+      { id: 'fh-exam', tenantId, name: 'Examination Fee', code: 'EXAM', isRecurring: false, defaultAmount: 1500, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+      { id: 'fh-admission', tenantId, name: 'Admission Fee', code: 'ADM', isRecurring: false, defaultAmount: 10000, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+      { id: 'fh-annual', tenantId, name: 'Annual Development Charges', code: 'DEV', isRecurring: false, defaultAmount: 3000, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
+    ];
+  },
+
+  async createFeeHead(
+    payload: {
+      tenantId: string;
+      name: string;
+      code: string;
+      description?: string;
+      isRecurring?: boolean;
+      defaultAmount?: number;
+    },
+    mode: StorageMode = 'local_storage'
+  ): Promise<FeeHeadItem> {
+    if (mode === 'cloudflare_d1') {
+      const { data, error } = await apiClient.post<FeeHeadItem>('/fees/heads', payload);
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to create fee head');
+      }
+      return data;
+    }
+    return {
+      id: `fh-${Date.now()}`,
+      tenantId: payload.tenantId,
+      name: payload.name,
+      code: payload.code.toUpperCase(),
+      description: payload.description,
+      isRecurring: payload.isRecurring !== false,
+      defaultAmount: payload.defaultAmount || 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+  },
+
+  async getFeeStructures(
+    tenantId: string,
+    filters?: { classId?: string; session?: string },
+    mode: StorageMode = 'local_storage'
+  ): Promise<FeeStructureItem[]> {
+    if (mode === 'cloudflare_d1') {
+      const q = new URLSearchParams();
+      q.set('tenantId', tenantId);
+      if (filters?.classId) q.set('classId', filters.classId);
+      if (filters?.session) q.set('session', filters.session);
+
+      const { data, error } = await apiClient.get<FeeStructureItem[]>(`/fees/structures?${q.toString()}`);
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to load class fee structures');
+      }
+      return data;
+    }
+
+    const classes = classService.getAll(tenantId);
+    return classes.map(c => ({
+      id: `fs-${c.id}`,
+      tenantId,
+      classId: c.id,
+      className: c.name,
+      feeHeadId: 'fh-tuition',
+      feeHeadName: 'Monthly Tuition Fee',
+      amount: c.monthlyTuitionFee || 5000,
+      academicSession: '2026-2027',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }));
+  },
+
+  async setFeeStructure(
+    payload: {
+      tenantId: string;
+      classId: string;
+      feeHeadId: string;
+      amount: number;
+      academicSession?: string;
+    },
+    mode: StorageMode = 'local_storage'
+  ): Promise<any> {
+    if (mode === 'cloudflare_d1') {
+      const { data, error } = await apiClient.post<any>('/fees/structures', payload);
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to save fee structure');
+      }
+      return data;
+    }
+
+    return { message: 'Structure updated in demo mode', ...payload };
+  },
+
+  async getInvoices(
+    tenantId: string,
+    filters?: {
+      classId?: string;
+      studentId?: string;
+      feeMonth?: string;
+      status?: string;
+      search?: string;
+    },
+    mode: StorageMode = 'local_storage'
+  ): Promise<FeeInvoice[]> {
+    if (mode === 'cloudflare_d1') {
+      const q = new URLSearchParams();
+      q.set('tenantId', tenantId);
+      if (filters?.classId && filters.classId !== 'all') q.set('classId', filters.classId);
+      if (filters?.studentId) q.set('studentId', filters.studentId);
+      if (filters?.feeMonth && filters.feeMonth !== 'all') q.set('feeMonth', filters.feeMonth);
+      if (filters?.status && filters.status !== 'all') q.set('status', filters.status);
+      if (filters?.search) q.set('search', filters.search);
+
+      const { data, error } = await apiClient.get<FeeInvoice[]>(`/fees/invoices?${q.toString()}`);
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to load invoices from Cloudflare D1');
+      }
+      return data;
+    }
+
+    return feeService.getInvoices(tenantId);
+  },
+
+  async getInvoiceById(
+    invoiceId: string,
+    tenantId: string,
+    mode: StorageMode = 'local_storage'
+  ): Promise<{ invoice: FeeInvoice; payments: FeePayment[] }> {
+    if (mode === 'cloudflare_d1') {
+      const { data, error } = await apiClient.get<{ invoice: FeeInvoice; payments: FeePayment[] }>(
+        `/fees/invoices/${encodeURIComponent(invoiceId)}?tenantId=${encodeURIComponent(tenantId)}`
+      );
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to retrieve invoice details');
+      }
+      return data;
+    }
+
+    const inv = feeService.getInvoiceById(invoiceId);
+    if (!inv) throw new Error('Invoice not found');
+    return { invoice: inv, payments: [] };
+  },
+
+  async createInvoice(
+    payload: {
+      tenantId: string;
+      studentId?: string;
+      classId?: string;
+      feeMonth: string;
+      academicSession?: string;
+      issueDate: string;
+      dueDate: string;
+      tuitionFee?: number;
+      examFee?: number;
+      admissionFee?: number;
+      otherCharges?: number;
+      discount?: number;
+      concessionType?: string;
+      concessionReason?: string;
+    },
+    mode: StorageMode = 'local_storage'
+  ): Promise<any> {
+    if (mode === 'cloudflare_d1') {
+      const { data, error } = await apiClient.post<any>('/fees/invoices', payload);
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to generate invoice');
+      }
+      return data;
+    }
+
+    // Demo fallback for single student
+    if (payload.studentId) {
+      const student = studentService.getById(payload.studentId);
+      const tuition = payload.tuitionFee || 5000;
+      const exam = payload.examFee || 0;
+      const admission = payload.admissionFee || 0;
+      const other = payload.otherCharges || 0;
+      const disc = payload.discount || 0;
+      const total = Math.max(0, tuition + exam + admission + other - disc);
+
+      return feeService.createInvoice({
+        tenantId: payload.tenantId,
+        invoiceNo: `INV-2026-${Math.floor(1000 + Math.random() * 9000)}`,
+        studentId: payload.studentId,
+        studentName: student?.name || 'Student',
+        admissionNo: student?.admissionNo || 'ADM-001',
+        classId: student?.classId || 'class-9',
+        className: student?.className || 'Class 9',
+        feeMonth: payload.feeMonth,
+        issueDate: payload.issueDate,
+        dueDate: payload.dueDate,
+        tuitionFee: tuition,
+        examFee: exam,
+        admissionFee: admission,
+        otherCharges: other,
+        discount: disc,
+        lateFee: 0,
+        totalAmount: total,
+        amountPaid: 0,
+        balance: total,
+        status: 'pending'
+      });
+    }
+
+    return { message: 'Invoices created' };
+  },
+
+  async applyConcession(
+    invoiceId: string,
+    payload: {
+      tenantId: string;
+      discount: number;
+      concessionType?: string;
+      reason: string;
+    },
+    mode: StorageMode = 'local_storage'
+  ): Promise<FeeInvoice> {
+    if (mode === 'cloudflare_d1') {
+      const { data, error } = await apiClient.put<FeeInvoice>(
+        `/fees/invoices/${encodeURIComponent(invoiceId)}/concession`,
+        payload
+      );
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to apply fee concession');
+      }
+      return data;
+    }
+
+    const inv = feeService.getInvoiceById(invoiceId);
+    if (!inv) throw new Error('Invoice not found');
+    const newTotal = Math.max(0, inv.totalAmount - payload.discount);
+    inv.discount = payload.discount;
+    inv.totalAmount = newTotal;
+    inv.balance = Math.max(0, newTotal - inv.amountPaid);
+    inv.status = inv.balance === 0 ? 'paid' : (inv.amountPaid > 0 ? 'partial' : 'pending');
+    return inv;
+  },
+
+  async recordPayment(
+    payload: {
+      tenantId: string;
+      invoiceId: string;
+      amount: number;
+      paymentDate: string;
+      paymentMethod: 'cash' | 'bank_transfer' | 'easypaisa' | 'jazzcash' | 'online';
+      transactionRef?: string;
+      receivedBy?: string;
+      idempotencyKey?: string;
+    },
+    mode: StorageMode = 'local_storage'
+  ): Promise<{ message: string; payment: FeePayment; invoice: FeeInvoice }> {
+    if (mode === 'cloudflare_d1') {
+      const { data, error } = await apiClient.post<{ message: string; payment: FeePayment; invoice: FeeInvoice }>(
+        '/fees/payments',
+        payload
+      );
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to record payment on Cloudflare D1');
+      }
+      return data;
+    }
+
+    const result = feeService.recordPayment({
+      invoiceId: payload.invoiceId,
+      amount: payload.amount,
+      paymentMethod: payload.paymentMethod,
+      receivedBy: payload.receivedBy || 'Admin',
+      transactionRef: payload.transactionRef || `TRX-${Date.now()}`
+    });
+    return {
+      message: 'Payment recorded',
+      payment: result.payment,
+      invoice: result.invoice
+    };
+  },
+
+  async getReceipt(
+    paymentId: string,
+    tenantId: string,
+    mode: StorageMode = 'local_storage'
+  ): Promise<{ receipt: FeePayment; invoice: FeeInvoice | null; school: any }> {
+    if (mode === 'cloudflare_d1') {
+      const { data, error } = await apiClient.get<{ receipt: FeePayment; invoice: FeeInvoice | null; school: any }>(
+        `/fees/payments/${encodeURIComponent(paymentId)}/receipt?tenantId=${encodeURIComponent(tenantId)}`
+      );
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to load receipt details');
+      }
+      return data;
+    }
+
+    return {
+      receipt: {
+        id: paymentId,
+        tenantId,
+        invoiceId: 'inv-demo',
+        invoiceNo: 'INV-DEMO-001',
+        receiptNo: `REC-${Date.now().toString().slice(-6)}`,
+        studentId: 'st-1',
+        studentName: 'Demo Student',
+        amount: 5000,
+        paymentDate: new Date().toISOString().split('T')[0],
+        paymentMethod: 'cash',
+        receivedBy: 'Administrator'
+      },
+      invoice: null,
+      school: {
+        name: 'TaleemCloud Academy',
+        address: 'Lahore, Pakistan',
+        phone: '+92 300 1234567',
+        email: 'info@taleemcloud.com',
+        affiliationBoard: 'BISE Lahore'
+      }
+    };
+  },
+
+  async reversePayment(
+    paymentId: string,
+    payload: { tenantId: string; reason: string },
+    mode: StorageMode = 'local_storage'
+  ): Promise<{ message: string; reversalId: string; reversalAmount: number; newInvoiceBalance: number }> {
+    if (mode === 'cloudflare_d1') {
+      const { data, error } = await apiClient.post<{
+        message: string;
+        reversalId: string;
+        reversalAmount: number;
+        newInvoiceBalance: number;
+      }>(`/fees/payments/${encodeURIComponent(paymentId)}/reverse`, payload);
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to reverse payment');
+      }
+      return data;
+    }
+
+    return {
+      message: 'Payment reversed in demo mode',
+      reversalId: `rev-${Date.now()}`,
+      reversalAmount: 5000,
+      newInvoiceBalance: 5000
+    };
+  },
+
+  async getStudentLedger(
+    studentId: string,
+    tenantId: string,
+    mode: StorageMode = 'local_storage'
+  ): Promise<{
+    student: any;
+    financialSummary: {
+      totalBilled: number;
+      totalPaid: number;
+      outstandingBalance: number;
+      invoiceCount: number;
+      paymentCount: number;
+    };
+    invoices: FeeInvoice[];
+    payments: FeePayment[];
+  }> {
+    if (mode === 'cloudflare_d1') {
+      const { data, error } = await apiClient.get<any>(
+        `/fees/students/${encodeURIComponent(studentId)}/ledger?tenantId=${encodeURIComponent(tenantId)}`
+      );
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to load student fee ledger');
+      }
+      return data;
+    }
+
+    const student = studentService.getById(studentId);
+    const invoices = feeService.getInvoices(tenantId).filter(i => i.studentId === studentId);
+    const totalBilled = invoices.reduce((sum: number, i: FeeInvoice) => sum + i.totalAmount, 0);
+    const totalPaid = invoices.reduce((sum: number, i: FeeInvoice) => sum + i.amountPaid, 0);
+    return {
+      student: student || { id: studentId, name: 'Student', admissionNo: 'ADM-001', className: 'Class 9' },
+      financialSummary: {
+        totalBilled,
+        totalPaid,
+        outstandingBalance: Math.max(0, totalBilled - totalPaid),
+        invoiceCount: invoices.length,
+        paymentCount: invoices.filter((i: FeeInvoice) => i.amountPaid > 0).length
+      },
+      invoices,
+      payments: []
+    };
+  },
+
+  async getFinancialSummary(
+    tenantId: string,
+    filters?: { session?: string; feeMonth?: string },
+    mode: StorageMode = 'local_storage'
+  ): Promise<{
+    academicSession: string;
+    feeMonth: string;
+    metrics: {
+      totalBilled: number;
+      totalPaid: number;
+      totalOutstanding: number;
+      totalOverdue: number;
+      collectionRate: number;
+      invoiceCount: number;
+      paidCount: number;
+      partialCount: number;
+      pendingCount: number;
+      overdueCount: number;
+    };
+    paymentMethods: Array<{ method: string; count: number; totalAmount: number }>;
+    classes: Array<{ className: string; totalInvoices: number; totalBilled: number; totalCollected: number; totalOutstanding: number }>;
+  }> {
+    if (mode === 'cloudflare_d1') {
+      const q = new URLSearchParams();
+      q.set('tenantId', tenantId);
+      if (filters?.session) q.set('session', filters.session);
+      if (filters?.feeMonth && filters.feeMonth !== 'all') q.set('feeMonth', filters.feeMonth);
+
+      const { data, error } = await apiClient.get<any>(`/fees/reports/summary?${q.toString()}`);
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to load financial summary reports');
+      }
+      return data;
+    }
+
+    const invoices = feeService.getInvoices(tenantId);
+    const totalBilled = invoices.reduce((s, i) => s + i.totalAmount, 0);
+    const totalPaid = invoices.reduce((s, i) => s + i.amountPaid, 0);
+    const totalOutstanding = invoices.reduce((s, i) => s + i.balance, 0);
+    return {
+      academicSession: filters?.session || '2026-2027',
+      feeMonth: filters?.feeMonth || 'all',
+      metrics: {
+        totalBilled,
+        totalPaid,
+        totalOutstanding,
+        totalOverdue: 0,
+        collectionRate: totalBilled > 0 ? Math.round((totalPaid / totalBilled) * 100) : 100,
+        invoiceCount: invoices.length,
+        paidCount: invoices.filter(i => i.status === 'paid').length,
+        partialCount: invoices.filter(i => i.status === 'partial').length,
+        pendingCount: invoices.filter(i => i.status === 'pending').length,
+        overdueCount: invoices.filter(i => i.status === 'overdue').length
+      },
+      paymentMethods: [{ method: 'cash', count: invoices.filter(i => i.amountPaid > 0).length, totalAmount: totalPaid }],
+      classes: []
+    };
+  },
+
+  async getFeeAuditLogs(
+    tenantId: string,
+    filters?: { action?: string },
+    mode: StorageMode = 'local_storage'
+  ): Promise<FeeAuditLogEntry[]> {
+    if (mode === 'cloudflare_d1') {
+      const q = new URLSearchParams();
+      q.set('tenantId', tenantId);
+      if (filters?.action && filters.action !== 'all') q.set('action', filters.action);
+
+      const { data, error } = await apiClient.get<FeeAuditLogEntry[]>(`/fees/audit-logs?${q.toString()}`);
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to fetch financial audit logs');
       }
       return data;
     }

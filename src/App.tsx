@@ -140,6 +140,7 @@ export default function App() {
             <Route index element={<Navigate to="/student/dashboard" replace />} />
             <Route path="dashboard" element={<StudentPortal />} />
             <Route path="attendance" element={<StudentPortal />} />
+            <Route path="fees" element={<StudentPortal />} />
             <Route path="results" element={<StudentPortal />} />
             <Route path="homework" element={<StudentPortal />} />
             <Route path="timetable" element={<StudentPortal />} />

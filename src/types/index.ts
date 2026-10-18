@@ -179,6 +179,13 @@ export interface FeeInvoice {
   amountPaid: number;
   balance: number;
   status: 'paid' | 'pending' | 'partial' | 'overdue';
+  academicSession?: string;
+  concessionType?: string;
+  concessionReason?: string;
+  concessionApprovedBy?: string;
+  feeItems?: Array<{ headName: string; amount: number }>;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface FeePayment {
@@ -194,6 +201,45 @@ export interface FeePayment {
   paymentMethod: 'cash' | 'bank_transfer' | 'easypaisa' | 'jazzcash' | 'online';
   transactionRef?: string;
   receivedBy: string;
+  isReversed?: boolean;
+  reversalId?: string;
+  createdAt?: string;
+}
+
+export interface FeeHeadItem {
+  id: string;
+  tenantId: string;
+  name: string;
+  code: string;
+  description?: string;
+  isRecurring: boolean;
+  defaultAmount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FeeStructureItem {
+  id: string;
+  tenantId: string;
+  classId: string;
+  className: string;
+  feeHeadId: string;
+  feeHeadName: string;
+  amount: number;
+  academicSession: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FeeAuditLogEntry {
+  id: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  details: Record<string, any>;
+  performedByUserId: string;
+  performedByUserName: string;
+  createdAt: string;
 }
 
 export interface Exam {

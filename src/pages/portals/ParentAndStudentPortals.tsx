@@ -21,7 +21,7 @@ import {
 } from '../../types';
 import { FeeReceiptModal } from '../../components/print/FeeReceiptModal';
 import { ReportCardModal } from '../../components/print/ReportCardModal';
-import { attendanceApiAdapter, StudentAttendanceHistoryResponse } from '../../services/dataAdapter';
+import { attendanceApiAdapter, feeApiAdapter, StudentAttendanceHistoryResponse } from '../../services/dataAdapter';
 import {
   Users,
   GraduationCap,
@@ -94,7 +94,9 @@ export const ParentPortal: React.FC = () => {
   const activeChild: Student = childrenList.find(c => c.id === activeChildId) || childrenList[0] || allStudents[0];
 
   // Child-specific data
-  const childInvoices = feeService.getInvoices(currentTenant.id).filter(i => i.studentId === activeChild.id);
+  const [childInvoices, setChildInvoices] = useState<FeeInvoice[]>(() =>
+    feeService.getInvoices(currentTenant.id).filter(i => i.studentId === activeChild.id)
+  );
   const childResults = examService.getResults(currentTenant.id).filter(r => r.studentId === activeChild.id);
   const childHomework = homeworkService.getAll(currentTenant.id).filter(h => h.classId === activeChild.classId);
   const timetable = timetableService.getAll(currentTenant.id, activeChild.classId);
@@ -111,14 +113,29 @@ export const ParentPortal: React.FC = () => {
   const [selectedResult, setSelectedResult] = useState<StudentResult | null>(null);
   const [selectedExamId, setSelectedExamId] = useState<string>(childResults[0]?.examId || 'exam-mid-26');
 
-  const pendingDues = childInvoices.reduce((sum, inv) => sum + inv.balance, 0);
-  const totalBilled = childInvoices.reduce((sum, inv) => sum + inv.totalAmount, 0);
-  const totalPaid = childInvoices.reduce((sum, inv) => sum + inv.amountPaid, 0);
+  const pendingDues = childInvoices.reduce((sum, inv) => sum + Number(inv.balance || 0), 0);
+  const totalBilled = childInvoices.reduce((sum, inv) => sum + Number(inv.totalAmount || 0), 0);
+  const totalPaid = childInvoices.reduce((sum, inv) => sum + Number(inv.amountPaid || 0), 0);
 
   const currentResult = childResults.find(r => r.examId === selectedExamId) || childResults[0];
 
-  // Dynamic D1 Attendance state for active child
+  // Dynamic D1 Fee Invoices & Attendance state for active child
   const [d1Attendance, setD1Attendance] = useState<StudentAttendanceHistoryResponse | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    async function loadInvoices() {
+      if (!activeChild?.id) return;
+      try {
+        const invs = await feeApiAdapter.getInvoices(currentTenant.id, { studentId: activeChild.id }, storageMode);
+        if (isMounted) setChildInvoices(invs);
+      } catch (err) {
+        console.warn('Failed to load child invoices from API:', err);
+      }
+    }
+    loadInvoices();
+    return () => { isMounted = false; };
+  }, [activeChild?.id, currentTenant.id, storageMode]);
 
   useEffect(() => {
     let isMounted = true;
@@ -848,6 +865,15 @@ export const ParentPortal: React.FC = () => {
           tenant={currentTenant}
         />
       )}
+
+      {selectedInvoice && (
+        <FeeReceiptModal
+          isOpen={true}
+          onClose={() => setSelectedInvoice(null)}
+          invoice={selectedInvoice}
+          tenant={currentTenant}
+        />
+      )}
     </div>
   );
 };
@@ -862,26 +888,28 @@ export const StudentPortal: React.FC = () => {
   const navigate = useNavigate();
 
   // Determine active tab based on current URL path
-  const getTabFromPath = (): 'dashboard' | 'timetable' | 'attendance' | 'homework' | 'results' => {
+  const getTabFromPath = (): 'dashboard' | 'timetable' | 'attendance' | 'fees' | 'homework' | 'results' => {
     if (location.pathname.includes('/timetable')) return 'timetable';
     if (location.pathname.includes('/attendance')) return 'attendance';
+    if (location.pathname.includes('/fees')) return 'fees';
     if (location.pathname.includes('/homework')) return 'homework';
     if (location.pathname.includes('/results')) return 'results';
     return 'dashboard';
   };
 
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'timetable' | 'attendance' | 'homework' | 'results'>(getTabFromPath);
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'timetable' | 'attendance' | 'fees' | 'homework' | 'results'>(getTabFromPath);
 
   useEffect(() => {
     setActiveTab(getTabFromPath());
   }, [location.pathname]);
 
-  const handleTabChange = (tab: 'dashboard' | 'timetable' | 'attendance' | 'homework' | 'results') => {
+  const handleTabChange = (tab: 'dashboard' | 'timetable' | 'attendance' | 'fees' | 'homework' | 'results') => {
     setActiveTab(tab);
     const pathMap = {
       dashboard: '/student/dashboard',
       timetable: '/student/timetable',
       attendance: '/student/attendance',
+      fees: '/student/fees',
       homework: '/student/homework',
       results: '/student/results'
     };
@@ -895,7 +923,9 @@ export const StudentPortal: React.FC = () => {
   const results = examService.getResults(currentTenant.id, undefined, student.id);
   const homeworkList = homeworkService.getAll(currentTenant.id, student.classId);
   const timetable = timetableService.getAll(currentTenant.id, student.classId);
-  const studentInvoices = feeService.getInvoices(currentTenant.id).filter(i => i.studentId === student.id);
+  const [studentInvoices, setStudentInvoices] = useState<FeeInvoice[]>(() =>
+    feeService.getInvoices(currentTenant.id).filter(i => i.studentId === student.id)
+  );
   const announcements = announcementService.getAll(currentTenant.id).filter(
     a => a.targetAudience === 'everyone' || a.targetAudience === 'students'
   );
@@ -909,10 +939,27 @@ export const StudentPortal: React.FC = () => {
   });
 
   const [selectedDay, setSelectedDay] = useState<string>('Monday');
-  const pendingDues = studentInvoices.reduce((sum, inv) => sum + inv.balance, 0);
+  const pendingDues = studentInvoices.reduce((sum, inv) => sum + Number(inv.balance || 0), 0);
+  const totalBilled = studentInvoices.reduce((sum, inv) => sum + Number(inv.totalAmount || 0), 0);
+  const totalPaid = studentInvoices.reduce((sum, inv) => sum + Number(inv.amountPaid || 0), 0);
 
-  // Dynamic D1 Attendance state for student
+  // Dynamic D1 Attendance & Invoices state for student
   const [d1Attendance, setD1Attendance] = useState<StudentAttendanceHistoryResponse | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    async function loadInvoices() {
+      if (!student?.id) return;
+      try {
+        const invs = await feeApiAdapter.getInvoices(currentTenant.id, { studentId: student.id }, storageMode);
+        if (isMounted) setStudentInvoices(invs);
+      } catch (err) {
+        console.warn('Failed to load student invoices from API:', err);
+      }
+    }
+    loadInvoices();
+    return () => { isMounted = false; };
+  }, [student?.id, currentTenant.id, storageMode]);
 
   useEffect(() => {
     let isMounted = true;
@@ -978,6 +1025,7 @@ export const StudentPortal: React.FC = () => {
           { id: 'dashboard', label: 'My Desk', icon: Layers },
           { id: 'timetable', label: 'Timetable', icon: Clock },
           { id: 'attendance', label: 'Attendance', icon: CalendarCheck },
+          { id: 'fees', label: 'Fee Challans', icon: CreditCard },
           { id: 'homework', label: 'Homework Diary', icon: BookOpen },
           { id: 'results', label: 'My Grades', icon: FileSpreadsheet }
         ].map(tab => {
@@ -1250,7 +1298,107 @@ export const StudentPortal: React.FC = () => {
         </div>
       )}
 
-      {/* ==================== TAB 4: HOMEWORK ==================== */}
+      {/* ==================== TAB 4: FEES & CHALLANS ==================== */}
+      {activeTab === 'fees' && (
+        <div className="space-y-6">
+          {/* Fee Overview Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
+              <span className="text-[11px] text-slate-400 font-semibold uppercase">Total Billed</span>
+              <p className="text-xl font-bold font-mono text-slate-900 mt-1">
+                PKR {totalBilled.toLocaleString()}
+              </p>
+              <span className="text-[10px] text-slate-500">{studentInvoices.length} Challan Vouchers</span>
+            </div>
+
+            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
+              <span className="text-[11px] text-slate-400 font-semibold uppercase">Total Paid</span>
+              <p className="text-xl font-bold font-mono text-emerald-700 mt-1">
+                PKR {totalPaid.toLocaleString()}
+              </p>
+              <span className="text-[10px] text-emerald-800 font-semibold">Account Verified</span>
+            </div>
+
+            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
+              <span className="text-[11px] text-slate-400 font-semibold uppercase">Outstanding Due</span>
+              <p className="text-xl font-bold font-mono text-rose-700 mt-1">
+                PKR {pendingDues.toLocaleString()}
+              </p>
+              <span className="text-[10px] text-slate-500">
+                {pendingDues === 0 ? 'All Clear' : 'Payable at Bank Branch'}
+              </span>
+            </div>
+          </div>
+
+          {/* Student Invoices List */}
+          <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-xs space-y-4">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                  <CreditCard className="w-4 h-4 text-teal-700" />
+                  <span>My Fee Challans & Deposit Slips</span>
+                </h3>
+                <p className="text-xs text-slate-500">Download or print your 3-copy bank deposit voucher</p>
+              </div>
+            </div>
+
+            {studentInvoices.length === 0 ? (
+              <div className="py-8 text-center text-slate-400 text-xs">
+                No fee vouchers issued for your account yet.
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-100 text-xs">
+                {studentInvoices.map(inv => (
+                  <div key={inv.id} className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-slate-900 text-sm">{inv.feeMonth}</span>
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                          inv.status === 'paid'
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : inv.status === 'partial'
+                            ? 'bg-amber-100 text-amber-800'
+                            : 'bg-rose-100 text-rose-800'
+                        }`}>
+                          {inv.status}
+                        </span>
+                      </div>
+                      <span className="text-slate-500 font-mono text-[11px] block mt-0.5">
+                        Challan #{inv.invoiceNo} • Due Date: {inv.dueDate}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-4">
+                      <div className="text-right">
+                        <span className="font-bold font-mono text-slate-900 block text-sm">
+                          PKR {inv.totalAmount.toLocaleString()}
+                        </span>
+                        {inv.balance > 0 ? (
+                          <span className="text-[11px] text-rose-600 font-semibold font-mono">
+                            Balance: PKR {inv.balance.toLocaleString()}
+                          </span>
+                        ) : (
+                          <span className="text-[11px] text-emerald-600 font-semibold">Fully Paid</span>
+                        )}
+                      </div>
+
+                      <button
+                        onClick={() => setSelectedInvoice(inv)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-teal-50 hover:bg-teal-100 text-teal-800 font-bold text-xs transition border border-teal-200"
+                      >
+                        <Printer className="w-3.5 h-3.5" />
+                        <span>Print Slip</span>
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ==================== TAB 5: HOMEWORK ==================== */}
       {activeTab === 'homework' && (
         <div className="space-y-6">
           <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-xs flex items-center justify-between">

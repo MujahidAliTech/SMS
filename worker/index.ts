@@ -51,6 +51,22 @@ import {
   handleCorrectAttendance,
   handleGetAttendanceCorrections
 } from './routes/attendance';
+import {
+  handleGetFeeHeads,
+  handleCreateFeeHead,
+  handleGetFeeStructures,
+  handleSetFeeStructure,
+  handleGetInvoices,
+  handleGetInvoiceById,
+  handleCreateInvoice,
+  handleApplyConcession,
+  handleRecordPayment,
+  handleGetReceipt,
+  handleReversePayment,
+  handleGetStudentLedger,
+  handleGetFinancialSummary,
+  handleGetFeeAuditLogs
+} from './routes/fees';
 
 function handleCors(request: Request): Response | null {
   const origin = request.headers.get('Origin');
@@ -274,6 +290,57 @@ export default {
       }
       if (path === '/api/v1/attendance' && method === 'GET') {
         return await handleGetAttendance(request, env);
+      }
+
+      // ----------------------------------------------------------------------
+      // Fee, Invoices, Payments & Financial Report Endpoints (Stage 6)
+      // ----------------------------------------------------------------------
+      if (path === '/api/v1/fees/heads' && method === 'GET') {
+        return await handleGetFeeHeads(request, env);
+      }
+      if (path === '/api/v1/fees/heads' && method === 'POST') {
+        return await handleCreateFeeHead(request, env);
+      }
+      if (path === '/api/v1/fees/structures' && method === 'GET') {
+        return await handleGetFeeStructures(request, env);
+      }
+      if (path === '/api/v1/fees/structures' && method === 'POST') {
+        return await handleSetFeeStructure(request, env);
+      }
+      if (path === '/api/v1/fees/reports/summary' && method === 'GET') {
+        return await handleGetFinancialSummary(request, env);
+      }
+      if (path === '/api/v1/fees/audit-logs' && method === 'GET') {
+        return await handleGetFeeAuditLogs(request, env);
+      }
+      if (path.startsWith('/api/v1/fees/students/') && path.endsWith('/ledger') && method === 'GET') {
+        const studentId = path.replace('/api/v1/fees/students/', '').replace('/ledger', '').split('/')[0];
+        return await handleGetStudentLedger(studentId, request, env);
+      }
+      if (path.startsWith('/api/v1/fees/payments/') && path.endsWith('/reverse') && method === 'POST') {
+        const paymentId = path.replace('/api/v1/fees/payments/', '').replace('/reverse', '').split('/')[0];
+        return await handleReversePayment(paymentId, request, env);
+      }
+      if (path.startsWith('/api/v1/fees/payments/') && path.endsWith('/receipt') && method === 'GET') {
+        const paymentId = path.replace('/api/v1/fees/payments/', '').replace('/receipt', '').split('/')[0];
+        return await handleGetReceipt(paymentId, request, env);
+      }
+      if (path === '/api/v1/fees/payments' && method === 'POST') {
+        return await handleRecordPayment(request, env);
+      }
+      if (path.startsWith('/api/v1/fees/invoices/') && path.endsWith('/concession') && method === 'PUT') {
+        const invoiceId = path.replace('/api/v1/fees/invoices/', '').replace('/concession', '').split('/')[0];
+        return await handleApplyConcession(invoiceId, request, env);
+      }
+      if (path.startsWith('/api/v1/fees/invoices/') && method === 'GET') {
+        const invoiceId = path.replace('/api/v1/fees/invoices/', '').split('/')[0];
+        return await handleGetInvoiceById(invoiceId, request, env);
+      }
+      if (path === '/api/v1/fees/invoices' && method === 'GET') {
+        return await handleGetInvoices(request, env);
+      }
+      if (path === '/api/v1/fees/invoices' && method === 'POST') {
+        return await handleCreateInvoice(request, env);
       }
 
       // ----------------------------------------------------------------------
