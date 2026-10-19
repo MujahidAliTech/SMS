@@ -28,7 +28,7 @@ function createTestD1(db: DatabaseSync): D1Database {
     prepare(query: string): D1PreparedStatement {
       return {
         bind(...values: unknown[]) {
-          const flatValues = values.map(v => (v === undefined ? null : v));
+          const flatValues = values.map(v => (v === undefined ? null : v)) as any[];
           return {
             async first<T = unknown>(colName?: string): Promise<T | null> {
               const stmt = db.prepare(query);
@@ -45,7 +45,7 @@ function createTestD1(db: DatabaseSync): D1Database {
             async run<T = unknown>(): Promise<D1Response<T>> {
               const stmt = db.prepare(query);
               const info = stmt.run(...flatValues);
-              return { results: [], success: true, meta: { changes: info.changes, last_row_id: Number(info.lastInsertRowid) } };
+              return { results: [], success: true, meta: { changes: Number(info.changes), last_row_id: Number(info.lastInsertRowid) } };
             },
             bind: () => this
           };
@@ -65,7 +65,7 @@ function createTestD1(db: DatabaseSync): D1Database {
         async run<T = unknown>(): Promise<D1Response<T>> {
           const stmt = db.prepare(query);
           const info = stmt.run();
-          return { results: [], success: true, meta: { changes: info.changes, last_row_id: Number(info.lastInsertRowid) } };
+          return { results: [], success: true, meta: { changes: Number(info.changes), last_row_id: Number(info.lastInsertRowid) } };
         }
       };
     },
