@@ -1291,9 +1291,11 @@ export const feeApiAdapter = {
     mode: StorageMode = 'local_storage'
   ): Promise<{ message: string; payment: FeePayment; invoice: FeeInvoice }> {
     if (mode === 'cloudflare_d1') {
+      const effectiveKey = payload.idempotencyKey?.trim() || `idem-${Date.now()}-${Math.random().toString(36).substring(2, 12)}`;
+      const finalPayload = { ...payload, idempotencyKey: effectiveKey };
       const { data, error } = await apiClient.post<{ message: string; payment: FeePayment; invoice: FeeInvoice }>(
         '/fees/payments',
-        payload
+        finalPayload
       );
       if (error || !data) {
         throw new Error(error?.message || 'Failed to record payment on Cloudflare D1');

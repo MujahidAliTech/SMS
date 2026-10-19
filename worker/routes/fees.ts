@@ -14,6 +14,26 @@ export type InvoiceStatus = 'paid' | 'pending' | 'partial' | 'overdue';
 const VALID_PAYMENT_METHODS: PaymentMethod[] = ['cash', 'bank_transfer', 'easypaisa', 'jazzcash', 'online'];
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
+/**
+ * Returns current date string (YYYY-MM-DD) in Pakistan Standard Time (Asia/Karachi, UTC+5)
+ */
+export function getSchoolTodayDate(): string {
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Karachi' }).format(new Date());
+  } catch {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
+/**
+ * Checks if a given due date has passed using Pakistan Standard Time policy
+ */
+export function isDateOverdue(dueDate: string): boolean {
+  if (!dueDate || !DATE_REGEX.test(dueDate)) return false;
+  const today = getSchoolTodayDate();
+  return today > dueDate;
+}
+
 interface FeeInvoiceDbRow {
   id: string;
   tenant_id: string;
@@ -815,8 +835,8 @@ export async function handleApplyConcession(invoiceId: string, request: Request,
   const { auth, error } = await authenticateRequest(request, env);
   if (error || !auth) return error || errorResponse('Unauthorized', 401);
 
-  // Authorized: school_admin, principal, accountant
-  const roleCheck = requireRoles(auth, ['school_admin', 'principal', 'accountant', 'super_admin']);
+  // Authorized: school_admin, principal, super_admin (accountant cannot grant concessions without admin approval)
+  const roleCheck = requireRoles(auth, ['school_admin', 'principal', 'super_admin']);
   if (roleCheck) return roleCheck;
 
   let body: {
@@ -848,6 +868,10 @@ export async function handleApplyConcession(invoiceId: string, request: Request,
   if (!invoice) return errorResponse('Invoice not found in your school records', 404);
 
   const subtotal = invoice.tuition_fee + invoice.exam_fee + invoice.admission_fee + invoice.other_charges + invoice.late_fee;
+  if (body.discount > subtotal) {
+    return errorResponse(`Discount (PKR ${body.discount}) cannot exceed the invoice subtotal (PKR ${subtotal})`, 400);
+  }
+
   const newDiscount = Math.min(subtotal, Math.floor(body.discount));
   const newTotal = Math.max(0, subtotal - newDiscount);
   const newBalance = Math.max(0, newTotal - invoice.amount_paid);
@@ -855,7 +879,7 @@ export async function handleApplyConcession(invoiceId: string, request: Request,
   let newStatus: InvoiceStatus = invoice.status;
   if (newBalance === 0) newStatus = 'paid';
   else if (invoice.amount_paid > 0) newStatus = 'partial';
-  else newStatus = new Date(invoice.due_date) < new Date() ? 'overdue' : 'pending';
+  else newStatus = isDateOverdue(invoice.due_date) ? 'overdue' : 'pending';
 
   await env.DB.prepare(`
     UPDATE fee_invoices
@@ -938,21 +962,45 @@ export async function handleRecordPayment(request: Request, env: Env): Promise<R
     return errorResponse(`Invalid paymentMethod. Allowed methods: ${VALID_PAYMENT_METHODS.join(', ')}`, 400);
   }
 
-  // 1. Idempotency Key check: if provided and existing, return processed payment safely
-  if (idempotencyKey && idempotencyKey.trim()) {
-    const existingPayment = await env.DB.prepare(`
-      SELECT * FROM fee_payments WHERE tenant_id = ? AND idempotency_key = ? LIMIT 1
-    `).bind(scopedTenantId, idempotencyKey.trim()).first<FeePaymentDbRow>();
-
-    if (existingPayment) {
-      return jsonResponse({
-        message: 'Payment already processed (idempotent)',
-        payment: formatPayment(existingPayment)
-      }, 200, {}, scopedTenantId);
-    }
+  // 1. Strict Idempotency Key Validation: Must be provided, non-empty, min 8 chars
+  if (!idempotencyKey || typeof idempotencyKey !== 'string' || idempotencyKey.trim().length < 8) {
+    return errorResponse('Valid idempotencyKey (minimum 8 characters string/UUID) is required for payment creation', 400);
+  }
+  const cleanKey = idempotencyKey.trim();
+  if (cleanKey.length > 128) {
+    return errorResponse('idempotencyKey must not exceed 128 characters', 400);
   }
 
-  // 2. Fetch invoice
+  // 2. Existing Idempotency Check with strict payload mismatch detection
+  const existingPayment = await env.DB.prepare(`
+    SELECT * FROM fee_payments WHERE tenant_id = ? AND idempotency_key = ? LIMIT 1
+  `).bind(scopedTenantId, cleanKey).first<FeePaymentDbRow>();
+
+  if (existingPayment) {
+    const isMatchingPayload =
+      existingPayment.invoice_id === invoiceId &&
+      Number(existingPayment.amount) === cleanAmount &&
+      existingPayment.payment_method === paymentMethod;
+
+    if (!isMatchingPayload) {
+      return errorResponse(
+        'Idempotency key already used with different payment parameters (invoice, amount, or method mismatch)',
+        409
+      );
+    }
+
+    const existingInvoice = await env.DB.prepare(`
+      SELECT * FROM fee_invoices WHERE id = ? AND tenant_id = ? LIMIT 1
+    `).bind(existingPayment.invoice_id, scopedTenantId).first<FeeInvoiceDbRow>();
+
+    return jsonResponse({
+      message: 'Payment already processed (idempotent)',
+      payment: formatPayment(existingPayment),
+      invoice: existingInvoice ? formatInvoice(existingInvoice) : undefined
+    }, 200, {}, scopedTenantId);
+  }
+
+  // 3. Fetch invoice and validate balance bounds
   const invoice = await env.DB.prepare(`
     SELECT * FROM fee_invoices WHERE id = ? AND tenant_id = ? LIMIT 1
   `).bind(invoiceId, scopedTenantId).first<FeeInvoiceDbRow>();
@@ -967,47 +1015,64 @@ export async function handleRecordPayment(request: Request, env: Env): Promise<R
     return errorResponse(`Payment amount (PKR ${cleanAmount}) exceeds the remaining balance (PKR ${invoice.balance})`, 400);
   }
 
-  // 3. Duplicate Submission Protection: check if identical payment was recorded in the last 60 seconds
-  const dupPayment = await env.DB.prepare(`
-    SELECT * FROM fee_payments
-    WHERE tenant_id = ? AND invoice_id = ? AND amount = ? AND payment_method = ?
-      AND created_at >= datetime('now', '-60 seconds')
-    LIMIT 1
-  `).bind(scopedTenantId, invoiceId, cleanAmount, paymentMethod).first<FeePaymentDbRow>();
-
-  if (dupPayment) {
-    return jsonResponse({
-      message: 'Payment already recorded within the last 60 seconds (duplicate prevented)',
-      payment: formatPayment(dupPayment)
-    }, 200, {}, scopedTenantId);
-  }
-
-  // 4. Record Payment & update invoice balance atomically
+  // 4. Record Payment with DB unique constraint and concurrent race handling
   const paymentId = `pay-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
   const receiptNo = `REC-${new Date(paymentDate).getFullYear()}${String(new Date(paymentDate).getMonth() + 1).padStart(2, '0')}-${Math.floor(10000 + Math.random() * 90000)}`;
   const receivedBy = body.receivedBy?.trim() || `${auth.user.name} (${auth.user.role === 'accountant' ? 'Accountant' : 'Admin'})`;
 
-  await env.DB.prepare(`
-    INSERT INTO fee_payments (
-      id, tenant_id, invoice_id, invoice_no, receipt_no, student_id, student_name,
-      amount, payment_date, payment_method, transaction_ref, received_by,
-      created_at, is_reversed, idempotency_key
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), 0, ?)
-  `).bind(
-    paymentId,
-    scopedTenantId,
-    invoice.id,
-    invoice.invoice_no,
-    receiptNo,
-    invoice.student_id,
-    invoice.student_name,
-    cleanAmount,
-    paymentDate,
-    paymentMethod,
-    transactionRef?.trim() || null,
-    receivedBy,
-    idempotencyKey?.trim() || null
-  ).run();
+  try {
+    await env.DB.prepare(`
+      INSERT INTO fee_payments (
+        id, tenant_id, invoice_id, invoice_no, receipt_no, student_id, student_name,
+        amount, payment_date, payment_method, transaction_ref, received_by,
+        created_at, is_reversed, idempotency_key
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), 0, ?)
+    `).bind(
+      paymentId,
+      scopedTenantId,
+      invoice.id,
+      invoice.invoice_no,
+      receiptNo,
+      invoice.student_id,
+      invoice.student_name,
+      cleanAmount,
+      paymentDate,
+      paymentMethod,
+      transactionRef?.trim() || null,
+      receivedBy,
+      cleanKey
+    ).run();
+  } catch (err: any) {
+    // Concurrent race condition handler on unique constraint
+    const racePayment = await env.DB.prepare(`
+      SELECT * FROM fee_payments WHERE tenant_id = ? AND idempotency_key = ? LIMIT 1
+    `).bind(scopedTenantId, cleanKey).first<FeePaymentDbRow>();
+
+    if (racePayment) {
+      const isMatchingPayload =
+        racePayment.invoice_id === invoiceId &&
+        Number(racePayment.amount) === cleanAmount &&
+        racePayment.payment_method === paymentMethod;
+
+      if (!isMatchingPayload) {
+        return errorResponse(
+          'Idempotency key already used with different payment parameters (invoice, amount, or method mismatch)',
+          409
+        );
+      }
+
+      const raceInvoice = await env.DB.prepare(`
+        SELECT * FROM fee_invoices WHERE id = ? AND tenant_id = ? LIMIT 1
+      `).bind(racePayment.invoice_id, scopedTenantId).first<FeeInvoiceDbRow>();
+
+      return jsonResponse({
+        message: 'Payment already processed (idempotent)',
+        payment: formatPayment(racePayment),
+        invoice: raceInvoice ? formatInvoice(raceInvoice) : undefined
+      }, 200, {}, scopedTenantId);
+    }
+    throw err;
+  }
 
   const newAmountPaid = invoice.amount_paid + cleanAmount;
   const newBalance = Math.max(0, invoice.total_amount - newAmountPaid);
@@ -1079,25 +1144,28 @@ export async function handleGetReceipt(paymentId: string, request: Request, env:
   `).bind(payment.invoice_id, scopedTenantId).first<FeeInvoiceDbRow>();
 
   const tenant = await env.DB.prepare(`
-    SELECT id, name, slug, branding_json FROM tenants WHERE id = ? LIMIT 1
-  `).bind(scopedTenantId).first<{ id: string; name: string; slug: string; branding_json: string }>();
-
-  let branding: any = {};
-  try {
-    branding = JSON.parse(tenant?.branding_json || '{}');
-  } catch {
-    branding = {};
-  }
+    SELECT id, name, slug, branding_school_name, branding_address, branding_phone, branding_email, branding_affiliation_board
+    FROM tenants WHERE id = ? LIMIT 1
+  `).bind(scopedTenantId).first<{
+    id: string;
+    name: string;
+    slug: string;
+    branding_school_name?: string;
+    branding_address?: string;
+    branding_phone?: string;
+    branding_email?: string;
+    branding_affiliation_board?: string;
+  }>();
 
   return jsonResponse({
     receipt: formatPayment(payment),
     invoice: invoice ? formatInvoice(invoice) : null,
     school: {
-      name: branding.schoolName || tenant?.name || 'TaleemCloud Academy',
-      address: branding.address || 'Lahore, Pakistan',
-      phone: branding.phone || '',
-      email: branding.email || '',
-      affiliationBoard: branding.affiliationBoard || 'BISE Lahore'
+      name: tenant?.branding_school_name || tenant?.name || 'TaleemCloud Academy',
+      address: tenant?.branding_address || 'Lahore, Pakistan',
+      phone: tenant?.branding_phone || '',
+      email: tenant?.branding_email || '',
+      affiliationBoard: tenant?.branding_affiliation_board || 'BISE Lahore'
     }
   }, 200, {}, scopedTenantId);
 }
@@ -1123,8 +1191,8 @@ export async function handleReversePayment(paymentId: string, request: Request, 
   const scopedTenantId = enforceTenantScoping(auth, body.tenantId);
   if (typeof scopedTenantId !== 'string') return scopedTenantId;
 
-  if (!body.reason || body.reason.trim().length < 3) {
-    return errorResponse('Mandatory authorization reason is required for payment reversal/refund', 400);
+  if (!body.reason || body.reason.trim().length < 5) {
+    return errorResponse('Mandatory authorization reason (min 5 characters) is required for payment reversal/refund', 400);
   }
 
   const payment = await env.DB.prepare(`
@@ -1134,7 +1202,7 @@ export async function handleReversePayment(paymentId: string, request: Request, 
   if (!payment) return errorResponse('Payment record not found', 404);
 
   if (payment.is_reversed === 1) {
-    return errorResponse('This payment has already been reversed', 400);
+    return errorResponse('This payment has already been reversed', 409);
   }
 
   const invoice = await env.DB.prepare(`
@@ -1145,7 +1213,18 @@ export async function handleReversePayment(paymentId: string, request: Request, 
 
   const reversalId = `rev-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
-  // 1. Insert reversal record
+  // 1. Mark payment as reversed atomically only if is_reversed is currently 0 (concurrency protection)
+  const updateRes = await env.DB.prepare(`
+    UPDATE fee_payments
+    SET is_reversed = 1, reversal_id = ?
+    WHERE id = ? AND tenant_id = ? AND is_reversed = 0
+  `).bind(reversalId, payment.id, scopedTenantId).run();
+
+  if (!updateRes.meta.changes || updateRes.meta.changes === 0) {
+    return errorResponse('This payment has already been reversed or is being processed concurrently', 409);
+  }
+
+  // 2. Insert immutable reversal audit record
   await env.DB.prepare(`
     INSERT INTO payment_reversals (
       id, tenant_id, payment_id, invoice_id, receipt_no, amount, reason,
@@ -1163,20 +1242,13 @@ export async function handleReversePayment(paymentId: string, request: Request, 
     auth.user.name
   ).run();
 
-  // 2. Mark payment as reversed
-  await env.DB.prepare(`
-    UPDATE fee_payments
-    SET is_reversed = 1, reversal_id = ?
-    WHERE id = ? AND tenant_id = ?
-  `).bind(reversalId, payment.id, scopedTenantId).run();
-
-  // 3. Re-adjust invoice balance safely
+  // 3. Re-adjust invoice balance safely ensuring bounds [0, total_amount]
   const newAmountPaid = Math.max(0, invoice.amount_paid - payment.amount);
   const newBalance = Math.min(invoice.total_amount, invoice.balance + payment.amount);
   let newStatus: InvoiceStatus = 'pending';
   if (newBalance === 0) newStatus = 'paid';
   else if (newAmountPaid > 0) newStatus = 'partial';
-  else newStatus = new Date(invoice.due_date) < new Date() ? 'overdue' : 'pending';
+  else newStatus = isDateOverdue(invoice.due_date) ? 'overdue' : 'pending';
 
   await env.DB.prepare(`
     UPDATE fee_invoices

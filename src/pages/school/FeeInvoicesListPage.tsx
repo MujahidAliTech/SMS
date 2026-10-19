@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useApp } from '../../context/AppContext';
 import { feeService, studentService, classService, exportService } from '../../services';
+import { feeApiAdapter } from '../../services/dataAdapter';
 import { FeeInvoice, FeePayment, SchoolClass } from '../../types';
 import { Modal } from '../../components/common/Modal';
 import { ConfirmModal } from '../../components/common/ConfirmModal';
@@ -26,7 +27,7 @@ import {
 } from 'lucide-react';
 
 export const FeeInvoicesListPage: React.FC = () => {
-  const { currentTenant, currentUser, toast } = useApp();
+  const { currentTenant, currentUser, storageMode, toast } = useApp();
   const [invoices, setInvoices] = useState<FeeInvoice[]>(() => feeService.getInvoices(currentTenant.id));
   const students = studentService.getAll(currentTenant.id);
   const [classes, setClasses] = useState<SchoolClass[]>(() => classService.getAll(currentTenant.id));
@@ -79,10 +80,22 @@ export const FeeInvoicesListPage: React.FC = () => {
     transactionRef: ''
   });
 
-  const refreshList = () => {
-    setInvoices(feeService.getInvoices(currentTenant.id));
+  const [actionLoading, setActionLoading] = useState(false);
+
+  const refreshList = useCallback(async () => {
+    try {
+      const invs = await feeApiAdapter.getInvoices(currentTenant.id, undefined, storageMode);
+      setInvoices(invs);
+    } catch (err: any) {
+      console.warn('Failed to load invoices from API:', err);
+      setInvoices(feeService.getInvoices(currentTenant.id));
+    }
     setClasses(classService.getAll(currentTenant.id));
-  };
+  }, [currentTenant.id, storageMode]);
+
+  useEffect(() => {
+    refreshList();
+  }, [refreshList]);
 
   const filteredInvoices = invoices.filter(inv => {
     const matchesSearch = inv.studentName.toLowerCase().includes(search.toLowerCase()) ||
@@ -104,7 +117,7 @@ export const FeeInvoicesListPage: React.FC = () => {
     setIsPaymentModalOpen(true);
   };
 
-  const handleRecordPayment = (e: React.FormEvent) => {
+  const handleRecordPayment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedInvoiceForPayment) return;
 
@@ -113,23 +126,34 @@ export const FeeInvoicesListPage: React.FC = () => {
       return;
     }
 
-    const result = feeService.recordPayment({
-      invoiceId: selectedInvoiceForPayment.id,
-      amount: Number(paymentForm.amount),
-      paymentMethod: paymentForm.paymentMethod,
-      receivedBy: `${currentUser.name} (${currentUser.role.replace('_', ' ')})`,
-      transactionRef: paymentForm.transactionRef || `TRX-${Date.now().toString().slice(-6)}`
-    });
+    try {
+      setActionLoading(true);
+      const idempotencyKey = `idem-${Date.now()}-${Math.random().toString(36).substring(2, 12)}`;
+      const result = await feeApiAdapter.recordPayment({
+        tenantId: currentTenant.id,
+        invoiceId: selectedInvoiceForPayment.id,
+        amount: Number(paymentForm.amount),
+        paymentDate: new Date().toISOString().split('T')[0],
+        paymentMethod: paymentForm.paymentMethod,
+        receivedBy: `${currentUser.name} (${currentUser.role.replace('_', ' ')})`,
+        transactionRef: paymentForm.transactionRef || `TRX-${Date.now().toString().slice(-6)}`,
+        idempotencyKey
+      }, storageMode);
 
-    refreshList();
-    setIsPaymentModalOpen(false);
-    toast(`Payment of PKR ${paymentForm.amount.toLocaleString()} recorded for ${selectedInvoiceForPayment.studentName}`, 'success');
+      await refreshList();
+      setIsPaymentModalOpen(false);
+      toast(`Payment of PKR ${Number(paymentForm.amount).toLocaleString()} recorded for ${selectedInvoiceForPayment.studentName}`, 'success');
 
-    // Prompt user with printable receipt
-    setSelectedInvoiceForReceipt(result.invoice);
+      // Prompt user with printable receipt
+      setSelectedInvoiceForReceipt(result.invoice);
+    } catch (err: any) {
+      toast(err.message || 'Failed to record payment', 'error');
+    } finally {
+      setActionLoading(false);
+    }
   };
 
-  const handleCreateChallan = (e: React.FormEvent) => {
+  const handleCreateChallan = async (e: React.FormEvent) => {
     e.preventDefault();
     const st = students.find(s => s.id === challanForm.studentId);
     if (!st) return;
@@ -143,79 +167,51 @@ export const FeeInvoicesListPage: React.FC = () => {
 
     const total = Math.max(0, tuition + exam + admission + other + late - disc);
 
-    feeService.createInvoice({
-      tenantId: currentTenant.id,
-      invoiceNo: `INV-${currentTenant.slug.slice(0, 3).toUpperCase()}-2610-${Math.floor(100 + Math.random() * 900)}`,
-      studentId: st.id,
-      studentName: st.name,
-      admissionNo: st.admissionNo,
-      classId: st.classId,
-      className: st.className,
-      feeMonth: challanForm.feeMonth,
-      issueDate: new Date().toISOString().split('T')[0],
-      dueDate: challanForm.dueDate,
-      tuitionFee: tuition,
-      examFee: exam,
-      admissionFee: admission,
-      otherCharges: other,
-      discount: disc,
-      lateFee: late,
-      totalAmount: total,
-      amountPaid: 0,
-      balance: total,
-      status: 'pending'
-    });
+    try {
+      setActionLoading(true);
+      await feeApiAdapter.createInvoice({
+        tenantId: currentTenant.id,
+        studentId: st.id,
+        feeMonth: challanForm.feeMonth,
+        issueDate: new Date().toISOString().split('T')[0],
+        dueDate: challanForm.dueDate,
+        tuitionFee: tuition,
+        examFee: exam,
+        admissionFee: admission,
+        otherCharges: other,
+        discount: disc
+      }, storageMode);
 
-    refreshList();
-    setIsNewChallanModalOpen(false);
-    toast(`Fee Challan issued for ${st.name} (PKR ${total.toLocaleString()})`, 'success');
+      await refreshList();
+      setIsNewChallanModalOpen(false);
+      toast(`Fee Challan issued for ${st.name} (PKR ${total.toLocaleString()})`, 'success');
+    } catch (err: any) {
+      toast(err.message || 'Failed to generate challan', 'error');
+    } finally {
+      setActionLoading(false);
+    }
   };
 
-  const handleBatchGenerate = (e: React.FormEvent) => {
+  const handleBatchGenerate = async (e: React.FormEvent) => {
     e.preventDefault();
-    const eligibleStudents = students.filter(s => 
-      s.status === 'active' && 
-      (batchForm.classId === 'all' || s.classId === batchForm.classId)
-    );
-
-    if (eligibleStudents.length === 0) {
-      toast('No active students found in selected class', 'error');
-      return;
-    }
-
-    let count = 0;
-    eligibleStudents.forEach(st => {
-      const cls = classes.find(c => c.id === st.classId);
-      const tuition = st.monthlyFee || cls?.monthlyTuitionFee || 5000;
-      
-      feeService.createInvoice({
+    try {
+      setActionLoading(true);
+      const res = await feeApiAdapter.createInvoice({
         tenantId: currentTenant.id,
-        invoiceNo: `INV-${currentTenant.slug.slice(0, 3).toUpperCase()}-${Date.now().toString().slice(-4)}${count}`,
-        studentId: st.id,
-        studentName: st.name,
-        admissionNo: st.admissionNo,
-        classId: st.classId,
-        className: st.className,
+        classId: batchForm.classId === 'all' ? undefined : batchForm.classId,
         feeMonth: batchForm.feeMonth,
         issueDate: new Date().toISOString().split('T')[0],
-        dueDate: batchForm.dueDate,
-        tuitionFee: tuition,
-        examFee: 0,
-        admissionFee: 0,
-        otherCharges: 0,
-        discount: 0,
-        lateFee: 0,
-        totalAmount: tuition,
-        amountPaid: 0,
-        balance: tuition,
-        status: 'pending'
-      });
-      count++;
-    });
+        dueDate: batchForm.dueDate
+      }, storageMode);
 
-    refreshList();
-    setIsBatchModalOpen(false);
-    toast(`Batch generated ${count} fee challans for ${batchForm.feeMonth}`, 'success');
+      await refreshList();
+      setIsBatchModalOpen(false);
+      toast(res.message || `Batch generated fee challans for ${batchForm.feeMonth}`, 'success');
+    } catch (err: any) {
+      toast(err.message || 'Failed to batch generate challans', 'error');
+    } finally {
+      setActionLoading(false);
+    }
   };
 
   const handleSaveStructure = (e: React.FormEvent) => {

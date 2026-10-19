@@ -138,10 +138,27 @@ async function runTests() {
 
   const accountantAuth = await createSession('user-accountant-bfs', tenantId, 'accountant');
   const adminAuth = await createSession('user-admin-bfs', tenantId, 'school_admin');
+  const principalAuth = await createSession('user-principal-bfs', tenantId, 'principal');
   const teacherAuth = await createSession('user-teacher-bfs', tenantId, 'teacher');
   const parentAuth = await createSession('user-parent-bfs', tenantId, 'parent');
   const studentAuth = await createSession('user-student-bfs', tenantId, 'student');
   const otherTenantAuth = await createSession(otherAdminId, otherTenantId, 'school_admin');
+
+  // Parent 2 user (Tariq Mehmood, linked to student-3 Bilal Tariq)
+  const otherParentUserId = 'user-parent2-bfs';
+  sqlite.prepare(`
+    INSERT OR REPLACE INTO users (id, tenant_id, name, email, phone, role, is_active, linked_entity_id, created_at)
+    VALUES (?, ?, 'Tariq Mehmood', 'tariq.parent@test.pk', '03001234567', 'parent', 1, 'parent-2', datetime('now'))
+  `).run(otherParentUserId, tenantId);
+  const otherParentAuth = await createSession(otherParentUserId, tenantId, 'parent');
+
+  // Student 2 user (Bilal Tariq, student-3)
+  const otherStudentUserId = 'user-student3-bfs';
+  sqlite.prepare(`
+    INSERT OR REPLACE INTO users (id, tenant_id, name, email, phone, role, is_active, linked_entity_id, created_at)
+    VALUES (?, ?, 'Bilal Tariq', 'bilal.tariq@student.pk', '03007654321', 'student', 1, 'student-3', datetime('now'))
+  `).run(otherStudentUserId, tenantId);
+  const otherStudentAuth = await createSession(otherStudentUserId, tenantId, 'student');
 
   const studentEntityId = 'student-1'; // Hamza Rizwan, linked to user-parent-bfs via parent-1
   const otherStudentEntityId = 'student-3'; // Bilal Tariq, linked to parent-2
@@ -276,6 +293,15 @@ async function runTests() {
 
   console.log('\n--- 6. Payment reversals restore invoice balance without deleting history ---');
   {
+    // Short reason rejected
+    const shortReq = new Request(`http://localhost/api/v1/fees/payments/${payment1Id}/reverse`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: accountantAuth },
+      body: JSON.stringify({ tenantId, reason: 'bad' })
+    });
+    const shortRes = await handleReversePayment(payment1Id, shortReq, env);
+    assert(shortRes.status === 400, 'Payment reversal with short reason rejected (status 400)');
+
     const revReq = new Request(`http://localhost/api/v1/fees/payments/${payment1Id}/reverse`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: accountantAuth },
@@ -296,10 +322,50 @@ async function runTests() {
     // Check payment_reversals audit entry
     const revRow = sqlite.prepare(`SELECT * FROM payment_reversals WHERE payment_id = ?`).get(payment1Id) as any;
     assert(revRow && revRow.reason === 'Duplicate teller entry adjustment', 'Reversal audit record stored in payment_reversals table');
+
+    // Duplicate reversal attempt must be rejected with 409 Conflict
+    const dupRevReq = new Request(`http://localhost/api/v1/fees/payments/${payment1Id}/reverse`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: accountantAuth },
+      body: JSON.stringify({ tenantId, reason: 'Attempting to reverse already reversed payment' })
+    });
+    const dupRevRes = await handleReversePayment(payment1Id, dupRevReq, env);
+    assert(dupRevRes.status === 409, 'Duplicate reversal of the same payment rejected with 409 Conflict');
   }
 
-  console.log('\n--- 7. Idempotency prevents duplicate payments ---');
+  console.log('\n--- 7. Idempotency prevents duplicate payments & payload tampering ---');
   {
+    // Test missing idempotencyKey
+    const noKeyReq = new Request('http://localhost/api/v1/fees/payments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: accountantAuth },
+      body: JSON.stringify({
+        tenantId,
+        invoiceId: createdInvoiceId,
+        amount: 3000,
+        paymentDate: '2026-11-06',
+        paymentMethod: 'bank_transfer'
+      })
+    });
+    const noKeyRes = await handleRecordPayment(noKeyReq, env);
+    assert(noKeyRes.status === 400, 'Payment without idempotencyKey rejected with 400 Bad Request');
+
+    // Test malformed idempotencyKey (< 8 chars)
+    const shortKeyReq = new Request('http://localhost/api/v1/fees/payments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: accountantAuth },
+      body: JSON.stringify({
+        tenantId,
+        invoiceId: createdInvoiceId,
+        amount: 3000,
+        paymentDate: '2026-11-06',
+        paymentMethod: 'bank_transfer',
+        idempotencyKey: 'short'
+      })
+    });
+    const shortKeyRes = await handleRecordPayment(shortKeyReq, env);
+    assert(shortKeyRes.status === 400, 'Payment with short idempotencyKey (<8 chars) rejected with 400 Bad Request');
+
     const key = `idempotent-key-${Date.now()}`;
     const pReq1 = new Request('http://localhost/api/v1/fees/payments', {
       method: 'POST',
@@ -315,9 +381,9 @@ async function runTests() {
       })
     });
     const pRes1 = await handleRecordPayment(pReq1, env);
-    assert(pRes1.status === 201, 'Initial payment succeeded');
+    assert(pRes1.status === 201, 'Initial payment with valid idempotencyKey succeeded (201)');
 
-    // Second call with same idempotencyKey
+    // Second call with same idempotencyKey and SAME payload
     const pReq2 = new Request('http://localhost/api/v1/fees/payments', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: accountantAuth },
@@ -332,9 +398,48 @@ async function runTests() {
       })
     });
     const pRes2 = await handleRecordPayment(pReq2, env);
-    assert(pRes2.status === 200, 'Subsequent payment with same idempotency key returned 200 without double-charging');
+    assert(pRes2.status === 200, 'Subsequent payment with same idempotency key and payload returned 200 without double-charging');
     const inv = sqlite.prepare(`SELECT amount_paid, balance FROM fee_invoices WHERE id = ?`).get(createdInvoiceId) as any;
     assert(inv.amount_paid === 3000, 'Invoice amount_paid charged once (3000) not doubled');
+
+    // Third call with SAME idempotencyKey but DIFFERENT amount (payload mismatch)
+    const pReqDiffAmount = new Request('http://localhost/api/v1/fees/payments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: accountantAuth },
+      body: JSON.stringify({
+        tenantId,
+        invoiceId: createdInvoiceId,
+        amount: 2500, // Different amount!
+        paymentDate: '2026-11-06',
+        paymentMethod: 'bank_transfer',
+        transactionRef: 'BANK-001',
+        idempotencyKey: key
+      })
+    });
+    const pResDiffAmount = await handleRecordPayment(pReqDiffAmount, env);
+    assert(pResDiffAmount.status === 409, 'Reusing same idempotencyKey with different amount rejected with 409 Conflict');
+
+    // Concurrent duplicate submission test
+    const concurrentKey = `concurrent-key-${Date.now()}`;
+    const makeConcurrentReq = () => new Request('http://localhost/api/v1/fees/payments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: accountantAuth },
+      body: JSON.stringify({
+        tenantId,
+        invoiceId: createdInvoiceId,
+        amount: 1000,
+        paymentDate: '2026-11-07',
+        paymentMethod: 'cash',
+        idempotencyKey: concurrentKey
+      })
+    });
+
+    const [cRes1, cRes2] = await Promise.all([
+      handleRecordPayment(makeConcurrentReq(), env),
+      handleRecordPayment(makeConcurrentReq(), env)
+    ]);
+    const statuses = [cRes1.status, cRes2.status].sort();
+    assert(statuses[0] === 200 && statuses[1] === 201, 'Concurrent duplicate submissions safely handled (one 201, one 200 idempotent)');
   }
 
   console.log('\n--- 8. Role permissions enforced (teacher denied, accountant authorized) ---');
@@ -423,6 +528,179 @@ async function runTests() {
     const actions = logs.map(l => l.action);
     assert(actions.includes('INVOICE_GENERATED') && actions.includes('PAYMENT_RECORDED') && actions.includes('PAYMENT_REVERSED'),
       'Audit log tracks INVOICE_GENERATED, PAYMENT_RECORDED, and PAYMENT_REVERSED actions');
+  }
+
+  console.log('\n--- 12. Receipt authorization & multi-role verification ---');
+  {
+    // Record a verified payment for studentEntityId (Hamza Rizwan)
+    const receiptTestKey = `rcpt-key-${Date.now()}`;
+    const rcptPayReq = new Request('http://localhost/api/v1/fees/payments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: accountantAuth },
+      body: JSON.stringify({
+        tenantId,
+        invoiceId: createdInvoiceId,
+        amount: 500,
+        paymentDate: '2026-11-08',
+        paymentMethod: 'cash',
+        idempotencyKey: receiptTestKey
+      })
+    });
+    const rcptPayRes = await handleRecordPayment(rcptPayReq, env);
+    const rcptPayData = await getData(rcptPayRes);
+    const targetPaymentId = rcptPayData.payment.id;
+
+    // 1. Linked parent can view their child's receipt
+    const linkedParentReq = new Request(`http://localhost/api/v1/fees/payments/${targetPaymentId}/receipt?tenantId=${tenantId}`, {
+      method: 'GET',
+      headers: { Authorization: parentAuth }
+    });
+    const linkedParentRes = await handleGetReceipt(targetPaymentId, linkedParentReq, env);
+    assert(linkedParentRes.status === 200, 'Linked parent can access their child\'s payment receipt (200)');
+
+    // 2. Unlinked parent (Tariq Mehmood, parent of Bilal Tariq) CANNOT view Hamza's receipt
+    const unlinkedParentReq = new Request(`http://localhost/api/v1/fees/payments/${targetPaymentId}/receipt?tenantId=${tenantId}`, {
+      method: 'GET',
+      headers: { Authorization: otherParentAuth }
+    });
+    const unlinkedParentRes = await handleGetReceipt(targetPaymentId, unlinkedParentReq, env);
+    assert(unlinkedParentRes.status === 403, 'Unlinked parent access to another child\'s receipt rejected with 403 Forbidden');
+
+    // 3. Student can view their own receipt
+    const ownStudentReq = new Request(`http://localhost/api/v1/fees/payments/${targetPaymentId}/receipt?tenantId=${tenantId}`, {
+      method: 'GET',
+      headers: { Authorization: studentAuth }
+    });
+    const ownStudentRes = await handleGetReceipt(targetPaymentId, ownStudentReq, env);
+    assert(ownStudentRes.status === 200, 'Student can view their own payment receipt (200)');
+
+    // 3b. Student CANNOT view another student's payment receipt
+    const otherStudentReq = new Request(`http://localhost/api/v1/fees/payments/${targetPaymentId}/receipt?tenantId=${tenantId}`, {
+      method: 'GET',
+      headers: { Authorization: otherStudentAuth }
+    });
+    const otherStudentRes = await handleGetReceipt(targetPaymentId, otherStudentReq, env);
+    assert(otherStudentRes.status === 403, 'Student access to another student\'s receipt rejected with 403 Forbidden');
+
+    // 4. Teacher CANNOT view payment receipts
+    const teacherReceiptReq = new Request(`http://localhost/api/v1/fees/payments/${targetPaymentId}/receipt?tenantId=${tenantId}`, {
+      method: 'GET',
+      headers: { Authorization: teacherAuth }
+    });
+    const teacherReceiptRes = await handleGetReceipt(targetPaymentId, teacherReceiptReq, env);
+    assert(teacherReceiptRes.status === 403, 'Teacher access to payment receipts rejected with 403 Forbidden');
+
+    // 5. Cross-tenant user requesting payment receipt rejected
+    const crossTenantReceiptReq = new Request(`http://localhost/api/v1/fees/payments/${targetPaymentId}/receipt?tenantId=${tenantId}`, {
+      method: 'GET',
+      headers: { Authorization: otherTenantAuth }
+    });
+    const crossTenantReceiptRes = await handleGetReceipt(targetPaymentId, crossTenantReceiptReq, env);
+    assert(crossTenantReceiptRes.status === 403, 'Cross-tenant user requesting payment receipt rejected with 403 Forbidden');
+
+    const crossTenantDirectReq = new Request(`http://localhost/api/v1/fees/payments/${targetPaymentId}/receipt`, {
+      method: 'GET',
+      headers: { Authorization: otherTenantAuth }
+    });
+    const crossTenantDirectRes = await handleGetReceipt(targetPaymentId, crossTenantDirectReq, env);
+    assert(crossTenantDirectRes.status === 404, 'Cross-tenant direct URL query rejected with 404 Not Found');
+  }
+
+  console.log('\n--- 13. Financial calculation integrity: zero, negative & overpayments ---');
+  {
+    // Zero payment rejected
+    const zeroReq = new Request('http://localhost/api/v1/fees/payments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: accountantAuth },
+      body: JSON.stringify({
+        tenantId,
+        invoiceId: createdInvoiceId,
+        amount: 0,
+        paymentDate: '2026-11-08',
+        paymentMethod: 'cash',
+        idempotencyKey: `zero-key-${Date.now()}`
+      })
+    });
+    const zeroRes = await handleRecordPayment(zeroReq, env);
+    assert(zeroRes.status === 400, 'Zero amount payment rejected with 400 Bad Request');
+
+    // Negative payment rejected
+    const negReq = new Request('http://localhost/api/v1/fees/payments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: accountantAuth },
+      body: JSON.stringify({
+        tenantId,
+        invoiceId: createdInvoiceId,
+        amount: -500,
+        paymentDate: '2026-11-08',
+        paymentMethod: 'cash',
+        idempotencyKey: `neg-key-${Date.now()}`
+      })
+    });
+    const negRes = await handleRecordPayment(negReq, env);
+    assert(negRes.status === 400, 'Negative amount payment rejected with 400 Bad Request');
+
+    // Overpayment rejected (attempting to pay 999,999 when balance is < 5000)
+    const overReq = new Request('http://localhost/api/v1/fees/payments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: accountantAuth },
+      body: JSON.stringify({
+        tenantId,
+        invoiceId: createdInvoiceId,
+        amount: 999999,
+        paymentDate: '2026-11-08',
+        paymentMethod: 'cash',
+        idempotencyKey: `over-key-${Date.now()}`
+      })
+    });
+    const overRes = await handleRecordPayment(overReq, env);
+    assert(overRes.status === 400, 'Overpayment exceeding invoice balance rejected with 400 Bad Request');
+  }
+
+  console.log('\n--- 14. Least-privilege role enforcement for fee concessions ---');
+  {
+    // 1. Accountant CANNOT apply fee concessions (requires admin or principal)
+    const accConcReq = new Request(`http://localhost/api/v1/fees/invoices/${createdInvoiceId}/concession`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: accountantAuth },
+      body: JSON.stringify({
+        tenantId,
+        discount: 300,
+        concessionType: 'sibling_discount',
+        reason: 'Accountant unauthorized concession attempt'
+      })
+    });
+    const accConcRes = await handleApplyConcession(createdInvoiceId, accConcReq, env);
+    assert(accConcRes.status === 403, 'Accountant denied from applying fee concessions (403 Forbidden)');
+
+    // 2. Principal CAN approve fee concessions
+    const prinConcReq = new Request(`http://localhost/api/v1/fees/invoices/${createdInvoiceId}/concession`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: principalAuth },
+      body: JSON.stringify({
+        tenantId,
+        discount: 300,
+        concessionType: 'merit_scholarship',
+        reason: 'Approved merit scholarship by Principal'
+      })
+    });
+    const prinConcRes = await handleApplyConcession(createdInvoiceId, prinConcReq, env);
+    assert(prinConcRes.status === 200, 'Principal authorized to apply fee concession (200 OK)');
+    const concData = await getData(prinConcRes);
+    assert(concData.discount === 300, 'Concession discount applied accurately to invoice');
+
+    // 3. Discount exceeding subtotal rejected
+    const excessiveConcReq = new Request(`http://localhost/api/v1/fees/invoices/${createdInvoiceId}/concession`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: adminAuth },
+      body: JSON.stringify({
+        tenantId,
+        discount: 9999999,
+        reason: 'Excessive discount test'
+      })
+    });
+    const excessiveConcRes = await handleApplyConcession(createdInvoiceId, excessiveConcReq, env);
+    assert(excessiveConcRes.status === 400, 'Concession discount exceeding invoice subtotal rejected with 400 Bad Request');
   }
 
   console.log(`\n======================================================`);
