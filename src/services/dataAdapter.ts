@@ -3,8 +3,8 @@
 // Multi-Tenant School Management SaaS
 // ============================================================================
 
-import { SchoolClass, Student, TeacherStaff, AttendanceRecord, AttendanceStatus, FeeInvoice, FeePayment, FeeHeadItem, FeeStructureItem, FeeAuditLogEntry, User, UserRole } from '../types';
-import { classService, studentService, teacherStaffService, attendanceService, feeService } from './index';
+import { SchoolClass, Student, TeacherStaff, AttendanceRecord, AttendanceStatus, FeeInvoice, FeePayment, FeeHeadItem, FeeStructureItem, FeeAuditLogEntry, User, UserRole, Exam, StudentResult, Subject, ExamAuditLogEntry, ResultCorrection } from '../types';
+import { classService, studentService, teacherStaffService, attendanceService, feeService, examService, subjectService } from './index';
 import { apiClient } from './apiClient';
 import { MockStorageAdapter } from './storage';
 
@@ -1504,5 +1504,456 @@ export const feeApiAdapter = {
     }
 
     return [];
+  }
+};
+
+/**
+ * Stage 7: Exam, Marks Entry, Grading, Result Publication & Report Cards Adapter
+ * Strictly interacts with Cloudflare Worker D1 endpoints when in cloudflare_d1 mode.
+ */
+export const examApiAdapter = {
+  async getExams(
+    tenantId: string,
+    filters?: { session?: string; term?: string },
+    mode: StorageMode = 'local_storage'
+  ): Promise<Exam[]> {
+    if (mode === 'cloudflare_d1') {
+      const q = new URLSearchParams();
+      q.set('tenantId', tenantId);
+      if (filters?.session && filters.session !== 'all') q.set('session', filters.session);
+      if (filters?.term && filters.term !== 'all') q.set('term', filters.term);
+
+      const { data, error } = await apiClient.get<Exam[]>(`/exams?${q.toString()}`);
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to fetch examinations from Cloudflare D1');
+      }
+      return data;
+    }
+
+    return examService.getExams(tenantId);
+  },
+
+  async createExam(
+    payload: {
+      tenantId: string;
+      title: string;
+      session?: string;
+      term?: Exam['term'];
+      startDate: string;
+      endDate: string;
+    },
+    mode: StorageMode = 'local_storage'
+  ): Promise<Exam> {
+    if (mode === 'cloudflare_d1') {
+      const { data, error } = await apiClient.post<Exam>('/exams', payload);
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to create examination');
+      }
+      return data;
+    }
+
+    return examService.createExam({
+      tenantId: payload.tenantId,
+      title: payload.title,
+      session: payload.session || '2026-2027',
+      term: payload.term || 'Mid Term',
+      startDate: payload.startDate,
+      endDate: payload.endDate,
+      status: 'upcoming'
+    });
+  },
+
+  async updateExam(
+    examId: string,
+    payload: Partial<Exam>,
+    mode: StorageMode = 'local_storage'
+  ): Promise<Exam> {
+    if (mode === 'cloudflare_d1') {
+      const { data, error } = await apiClient.put<Exam>(`/exams/${examId}`, payload);
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to update examination');
+      }
+      return data;
+    }
+
+    return examService.updateExam(examId, payload);
+  },
+
+  async getSubjects(
+    tenantId: string,
+    classId?: string,
+    mode: StorageMode = 'local_storage'
+  ): Promise<Subject[]> {
+    if (mode === 'cloudflare_d1') {
+      const q = new URLSearchParams();
+      q.set('tenantId', tenantId);
+      if (classId && classId !== 'all') q.set('classId', classId);
+
+      const { data, error } = await apiClient.get<Subject[]>(`/exams/subjects?${q.toString()}`);
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to load class subjects');
+      }
+      return data;
+    }
+
+    let list = subjectService.getAll(tenantId);
+    if (classId && classId !== 'all') {
+      list = list.filter(s => s.classId === classId);
+    }
+    return list;
+  },
+
+  async createSubject(
+    payload: {
+      tenantId: string;
+      classId: string;
+      name: string;
+      code: string;
+      teacherId?: string;
+      teacherName?: string;
+      totalMarks?: number;
+      passingMarks?: number;
+    },
+    mode: StorageMode = 'local_storage'
+  ): Promise<Subject> {
+    if (mode === 'cloudflare_d1') {
+      const { data, error } = await apiClient.post<Subject>('/exams/subjects', payload);
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to configure subject');
+      }
+      return data;
+    }
+
+    return subjectService.create({
+      tenantId: payload.tenantId,
+      classId: payload.classId,
+      name: payload.name,
+      code: payload.code,
+      teacherId: payload.teacherId || '',
+      teacherName: payload.teacherName || '',
+      totalMarks: payload.totalMarks || 100,
+      passingMarks: payload.passingMarks || 40
+    });
+  },
+
+  async getMarksRoster(
+    examId: string,
+    classId: string,
+    tenantId: string,
+    mode: StorageMode = 'local_storage'
+  ): Promise<{
+    exam: Exam;
+    classItem: SchoolClass;
+    subjects: Subject[];
+    students: Student[];
+    existingResults: StudentResult[];
+    roster: Array<{
+      studentId: string;
+      studentName: string;
+      rollNo: string;
+      resultId?: string;
+      status: 'pass' | 'fail' | 'pending';
+      publicationStatus: string;
+      subjects: Array<{
+        subjectId: string;
+        subjectName: string;
+        totalMarks: number;
+        passingMarks: number;
+        obtainedMarks: number;
+        grade: string;
+        marksStatus: 'present' | 'absent' | 'exempt';
+        remarks?: string;
+      }>;
+      totalMarks: number;
+      totalObtained: number;
+      percentage: number;
+      grade: string;
+      teacherRemarks?: string;
+    }>;
+  }> {
+    if (mode === 'cloudflare_d1') {
+      const { data, error } = await apiClient.get<any>(
+        `/exams/${examId}/classes/${classId}/roster?tenantId=${encodeURIComponent(tenantId)}`
+      );
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to load examination marks roster');
+      }
+      return data;
+    }
+
+    // Mock / Local Fallback
+    const exam = examService.getExams(tenantId).find(e => e.id === examId)!;
+    const classItem = classService.getById(classId)!;
+    const subjects = subjectService.getAll(tenantId).filter(s => s.classId === classId);
+    const students = studentService.getAll(tenantId).filter(s => s.classId === classId);
+    const existingResults = examService.getResults(tenantId, examId).filter(r => r.classId === classId);
+
+    const roster = students.map(st => {
+      const existing = existingResults.find(r => r.studentId === st.id);
+      return {
+        studentId: st.id,
+        studentName: st.name,
+        rollNo: st.rollNo,
+        resultId: existing?.id,
+        status: (existing?.status as 'pass' | 'fail') || 'pending',
+        publicationStatus: existing?.publicationStatus || 'draft',
+        subjects: subjects.map(sub => {
+          const sm = existing?.subjectsMarks.find(m => m.subjectId === sub.id);
+          return {
+            subjectId: sub.id,
+            subjectName: sub.name,
+            totalMarks: sub.totalMarks,
+            passingMarks: sub.passingMarks,
+            obtainedMarks: sm?.obtainedMarks ?? 0,
+            grade: sm?.grade ?? 'F',
+            marksStatus: sm?.marksStatus || 'present',
+            remarks: sm?.remarks
+          };
+        }),
+        totalMarks: existing?.totalMarks ?? subjects.reduce((sum, s) => sum + s.totalMarks, 0),
+        totalObtained: existing?.totalObtained ?? 0,
+        percentage: existing?.percentage ?? 0,
+        grade: existing?.grade ?? 'F',
+        teacherRemarks: existing?.teacherRemarks
+      };
+    });
+
+    return {
+      exam,
+      classItem,
+      subjects,
+      students,
+      existingResults,
+      roster
+    };
+  },
+
+  async saveMarks(
+    examId: string,
+    payload: {
+      tenantId: string;
+      classId: string;
+      studentMarks: Array<{
+        studentId: string;
+        subjects: Array<{
+          subjectId: string;
+          obtainedMarks: number;
+          marksStatus?: 'present' | 'absent' | 'exempt';
+          remarks?: string;
+        }>;
+        teacherRemarks?: string;
+      }>;
+    },
+    mode: StorageMode = 'local_storage'
+  ): Promise<any> {
+    if (mode === 'cloudflare_d1') {
+      const { data, error } = await apiClient.post<any>(`/exams/${examId}/marks`, payload);
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to save marks');
+      }
+      return data;
+    }
+
+    return { message: 'Saved successfully', processedCount: payload.studentMarks.length };
+  },
+
+  async submitResultsForReview(
+    examId: string,
+    payload: { tenantId: string; classId?: string },
+    mode: StorageMode = 'local_storage'
+  ): Promise<any> {
+    if (mode === 'cloudflare_d1') {
+      const { data, error } = await apiClient.post<any>(`/exams/${examId}/submit`, payload);
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to submit results for review');
+      }
+      return data;
+    }
+    return { message: 'Submitted for review' };
+  },
+
+  async approveResults(
+    examId: string,
+    payload: { tenantId: string; classId?: string },
+    mode: StorageMode = 'local_storage'
+  ): Promise<any> {
+    if (mode === 'cloudflare_d1') {
+      const { data, error } = await apiClient.post<any>(`/exams/${examId}/approve`, payload);
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to approve results');
+      }
+      return data;
+    }
+    return { message: 'Approved successfully' };
+  },
+
+  async publishResults(
+    examId: string,
+    payload: { tenantId: string; classId?: string },
+    mode: StorageMode = 'local_storage'
+  ): Promise<any> {
+    if (mode === 'cloudflare_d1') {
+      const { data, error } = await apiClient.post<any>(`/exams/${examId}/publish`, payload);
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to publish results');
+      }
+      return data;
+    }
+    return { message: 'Published successfully' };
+  },
+
+  async unpublishResults(
+    examId: string,
+    payload: { tenantId: string; classId?: string; reason?: string },
+    mode: StorageMode = 'local_storage'
+  ): Promise<any> {
+    if (mode === 'cloudflare_d1') {
+      const { data, error } = await apiClient.post<any>(`/exams/${examId}/unpublish`, payload);
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to unpublish results');
+      }
+      return data;
+    }
+    return { message: 'Unpublished successfully' };
+  },
+
+  async getResults(
+    examId: string,
+    filters?: { tenantId?: string; classId?: string; studentId?: string; publicationStatus?: string },
+    mode: StorageMode = 'local_storage'
+  ): Promise<StudentResult[]> {
+    if (mode === 'cloudflare_d1') {
+      const q = new URLSearchParams();
+      if (filters?.tenantId) q.set('tenantId', filters.tenantId);
+      if (filters?.classId && filters.classId !== 'all') q.set('classId', filters.classId);
+      if (filters?.studentId) q.set('studentId', filters.studentId);
+      if (filters?.publicationStatus && filters.publicationStatus !== 'all') q.set('publicationStatus', filters.publicationStatus);
+
+      const { data, error } = await apiClient.get<StudentResult[]>(`/exams/${examId}/results?${q.toString()}`);
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to load student results');
+      }
+      return data;
+    }
+
+    let list = examService.getResults(filters?.tenantId || '', examId, filters?.studentId);
+    if (filters?.classId && filters.classId !== 'all') {
+      list = list.filter(r => r.classId === filters.classId);
+    }
+    return list;
+  },
+
+  async getReportCard(
+    examId: string,
+    studentId: string,
+    tenantId?: string,
+    mode: StorageMode = 'local_storage'
+  ): Promise<{
+    tenant: any;
+    exam: Exam;
+    student: Student;
+    parent: any;
+    result: StudentResult;
+    subjectsMarks: any[];
+    classTotalStudents: number;
+    corrections: ResultCorrection[];
+  }> {
+    if (mode === 'cloudflare_d1') {
+      const q = new URLSearchParams();
+      if (tenantId) q.set('tenantId', tenantId);
+
+      const { data, error } = await apiClient.get<any>(
+        `/exams/${examId}/students/${studentId}/report-card?${q.toString()}`
+      );
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to load official report card');
+      }
+      return data;
+    }
+
+    const exam = examService.getExams(tenantId || '').find(e => e.id === examId)!;
+    const student = studentService.getById(studentId)!;
+    const result = examService.getResults(tenantId || '', examId, studentId)[0];
+    return {
+      tenant: { name: 'TaleemCloud Academy' },
+      exam,
+      student,
+      parent: null,
+      result,
+      subjectsMarks: result?.subjectsMarks || [],
+      classTotalStudents: 30,
+      corrections: []
+    };
+  },
+
+  async correctResult(
+    examId: string,
+    resultId: string,
+    payload: {
+      tenantId: string;
+      subjectId: string;
+      newObtainedMarks: number;
+      reason: string;
+    },
+    mode: StorageMode = 'local_storage'
+  ): Promise<any> {
+    if (mode === 'cloudflare_d1') {
+      const { data, error } = await apiClient.post<any>(
+        `/exams/${examId}/results/${resultId}/correct`,
+        payload
+      );
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to correct result marks');
+      }
+      return data;
+    }
+
+    return { message: 'Corrected successfully' };
+  },
+
+  async getExamAuditLogs(
+    examId: string,
+    tenantId?: string,
+    mode: StorageMode = 'local_storage'
+  ): Promise<ExamAuditLogEntry[]> {
+    if (mode === 'cloudflare_d1') {
+      const q = new URLSearchParams();
+      if (tenantId) q.set('tenantId', tenantId);
+
+      const { data, error } = await apiClient.get<ExamAuditLogEntry[]>(
+        `/exams/${examId}/audit-logs?${q.toString()}`
+      );
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to fetch exam audit logs');
+      }
+      return data;
+    }
+
+    return [];
+  },
+
+  async getExamSummary(
+    examId: string,
+    tenantId?: string,
+    mode: StorageMode = 'local_storage'
+  ): Promise<any> {
+    if (mode === 'cloudflare_d1') {
+      const q = new URLSearchParams();
+      if (tenantId) q.set('tenantId', tenantId);
+
+      const { data, error } = await apiClient.get<any>(
+        `/exams/${examId}/summary?${q.toString()}`
+      );
+      if (error || !data) {
+        throw new Error(error?.message || 'Failed to load exam performance summary');
+      }
+      return data;
+    }
+
+    return {
+      exam: { id: examId, title: 'Exam Summary' },
+      overall: { totalStudents: 0, passed: 0, failed: 0, passPercentage: 0, averageScore: 0 },
+      classes: []
+    };
   }
 };

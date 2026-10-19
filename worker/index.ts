@@ -67,6 +67,24 @@ import {
   handleGetFinancialSummary,
   handleGetFeeAuditLogs
 } from './routes/fees';
+import {
+  handleGetExams,
+  handleCreateExam,
+  handleUpdateExam,
+  handleGetSubjects,
+  handleCreateSubject,
+  handleGetMarksRoster,
+  handleSaveMarks,
+  handleSubmitResultsForReview,
+  handleApproveResults,
+  handlePublishResults,
+  handleUnpublishResults,
+  handleGetResults,
+  handleGetReportCard,
+  handleCorrectResult,
+  handleGetExamAuditLogs,
+  handleGetExamSummary
+} from './routes/exams';
 
 function handleCors(request: Request): Response | null {
   const origin = request.headers.get('Origin');
@@ -341,6 +359,103 @@ export default {
       }
       if (path === '/api/v1/fees/invoices' && method === 'POST') {
         return await handleCreateInvoice(request, env);
+      }
+
+      // ----------------------------------------------------------------------
+      // Exams, Marks, Grading, Publication & Report Cards Endpoints (Stage 7)
+      // ----------------------------------------------------------------------
+      // Subjects configuration
+      if (path === '/api/v1/exams/subjects' && method === 'GET') {
+        return await handleGetSubjects(request, env);
+      }
+      if (path === '/api/v1/exams/subjects' && method === 'POST') {
+        return await handleCreateSubject(request, env);
+      }
+
+      // Exams list & create
+      if (path === '/api/v1/exams' && method === 'GET') {
+        return await handleGetExams(request, env);
+      }
+      if (path === '/api/v1/exams' && method === 'POST') {
+        return await handleCreateExam(request, env);
+      }
+
+      // /api/v1/exams/:examId/classes/:classId/roster
+      if (path.startsWith('/api/v1/exams/') && path.includes('/classes/') && path.endsWith('/roster') && method === 'GET') {
+        const parts = path.replace('/api/v1/exams/', '').split('/');
+        const examId = parts[0];
+        const classId = parts[2];
+        return await handleGetMarksRoster(examId, classId, request, env);
+      }
+
+      // /api/v1/exams/:examId/marks
+      if (path.startsWith('/api/v1/exams/') && path.endsWith('/marks') && method === 'POST') {
+        const examId = path.replace('/api/v1/exams/', '').replace('/marks', '').split('/')[0];
+        return await handleSaveMarks(examId, request, env);
+      }
+
+      // /api/v1/exams/:examId/submit
+      if (path.startsWith('/api/v1/exams/') && path.endsWith('/submit') && method === 'POST') {
+        const examId = path.replace('/api/v1/exams/', '').replace('/submit', '').split('/')[0];
+        return await handleSubmitResultsForReview(examId, request, env);
+      }
+
+      // /api/v1/exams/:examId/approve
+      if (path.startsWith('/api/v1/exams/') && path.endsWith('/approve') && method === 'POST') {
+        const examId = path.replace('/api/v1/exams/', '').replace('/approve', '').split('/')[0];
+        return await handleApproveResults(examId, request, env);
+      }
+
+      // /api/v1/exams/:examId/publish
+      if (path.startsWith('/api/v1/exams/') && path.endsWith('/publish') && method === 'POST') {
+        const examId = path.replace('/api/v1/exams/', '').replace('/publish', '').split('/')[0];
+        return await handlePublishResults(examId, request, env);
+      }
+
+      // /api/v1/exams/:examId/unpublish
+      if (path.startsWith('/api/v1/exams/') && path.endsWith('/unpublish') && method === 'POST') {
+        const examId = path.replace('/api/v1/exams/', '').replace('/unpublish', '').split('/')[0];
+        return await handleUnpublishResults(examId, request, env);
+      }
+
+      // /api/v1/exams/:examId/results/:resultId/correct
+      if (path.startsWith('/api/v1/exams/') && path.includes('/results/') && path.endsWith('/correct') && method === 'POST') {
+        const parts = path.replace('/api/v1/exams/', '').split('/');
+        const examId = parts[0];
+        const resultId = parts[2];
+        return await handleCorrectResult(examId, resultId, request, env);
+      }
+
+      // /api/v1/exams/:examId/results
+      if (path.startsWith('/api/v1/exams/') && path.endsWith('/results') && method === 'GET') {
+        const examId = path.replace('/api/v1/exams/', '').replace('/results', '').split('/')[0];
+        return await handleGetResults(examId, request, env);
+      }
+
+      // /api/v1/exams/:examId/students/:studentId/report-card
+      if (path.startsWith('/api/v1/exams/') && path.includes('/students/') && path.endsWith('/report-card') && method === 'GET') {
+        const parts = path.replace('/api/v1/exams/', '').split('/');
+        const examId = parts[0];
+        const studentId = parts[2];
+        return await handleGetReportCard(examId, studentId, request, env);
+      }
+
+      // /api/v1/exams/:examId/audit-logs
+      if (path.startsWith('/api/v1/exams/') && path.endsWith('/audit-logs') && method === 'GET') {
+        const examId = path.replace('/api/v1/exams/', '').replace('/audit-logs', '').split('/')[0];
+        return await handleGetExamAuditLogs(examId, request, env);
+      }
+
+      // /api/v1/exams/:examId/summary
+      if (path.startsWith('/api/v1/exams/') && path.endsWith('/summary') && method === 'GET') {
+        const examId = path.replace('/api/v1/exams/', '').replace('/summary', '').split('/')[0];
+        return await handleGetExamSummary(examId, request, env);
+      }
+
+      // /api/v1/exams/:examId (PUT update)
+      if (path.startsWith('/api/v1/exams/') && method === 'PUT') {
+        const examId = path.replace('/api/v1/exams/', '').split('/')[0];
+        return await handleUpdateExam(examId, request, env);
       }
 
       // ----------------------------------------------------------------------

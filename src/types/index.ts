@@ -247,10 +247,14 @@ export interface Exam {
   tenantId: string;
   title: string;
   session: string;
+  academicSession?: string;
   term: 'First Term' | 'Mid Term' | 'Pre-Board' | 'Final Term' | 'Monthly Test';
   startDate: string;
   endDate: string;
   status: 'upcoming' | 'ongoing' | 'completed' | 'announced';
+  publicationStatus?: 'draft' | 'submitted' | 'approved' | 'published';
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface SubjectMarks {
@@ -260,6 +264,10 @@ export interface SubjectMarks {
   obtainedMarks: number;
   passingMarks: number;
   grade: string;
+  marksStatus?: 'present' | 'absent' | 'exempt';
+  isAbsent?: boolean;
+  isExempt?: boolean;
+  enteredByTeacherId?: string;
   remarks?: string;
 }
 
@@ -281,6 +289,60 @@ export interface StudentResult {
   positionInClass?: number;
   status: 'pass' | 'fail';
   teacherRemarks: string;
+  publicationStatus?: 'draft' | 'submitted' | 'approved' | 'published';
+  submittedBy?: string;
+  approvedBy?: string;
+  publishedAt?: string;
+  publishedBy?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ExamSchedule {
+  id: string;
+  tenantId: string;
+  examId: string;
+  classId: string;
+  className: string;
+  subjectId: string;
+  subjectName: string;
+  examDate: string;
+  startTime?: string;
+  endTime?: string;
+  totalMarks: number;
+  passingMarks: number;
+  roomNo?: string;
+  createdAt?: string;
+}
+
+export interface ResultCorrection {
+  id: string;
+  tenantId: string;
+  resultId: string;
+  subjectId: string;
+  examId: string;
+  studentId: string;
+  oldObtainedMarks: number;
+  newObtainedMarks: number;
+  oldGrade: string;
+  newGrade: string;
+  reason: string;
+  correctedByUserId: string;
+  correctedByUserName: string;
+  createdAt: string;
+}
+
+export interface ExamAuditLogEntry {
+  id: string;
+  tenantId: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  details: Record<string, any>;
+  performedByUserId: string;
+  performedByUserName?: string;
+  reason?: string;
+  createdAt: string;
 }
 
 export interface TimetableEntry {
