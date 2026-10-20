@@ -21,7 +21,7 @@ import {
 } from '../../types';
 import { FeeReceiptModal } from '../../components/print/FeeReceiptModal';
 import { ReportCardModal } from '../../components/print/ReportCardModal';
-import { attendanceApiAdapter, feeApiAdapter, StudentAttendanceHistoryResponse } from '../../services/dataAdapter';
+import { attendanceApiAdapter, feeApiAdapter, examApiAdapter, StudentAttendanceHistoryResponse } from '../../services/dataAdapter';
 import {
   Users,
   GraduationCap,
@@ -97,7 +97,9 @@ export const ParentPortal: React.FC = () => {
   const [childInvoices, setChildInvoices] = useState<FeeInvoice[]>(() =>
     feeService.getInvoices(currentTenant.id).filter(i => i.studentId === activeChild.id)
   );
-  const childResults = examService.getResults(currentTenant.id).filter(r => r.studentId === activeChild.id);
+  const [childResults, setChildResults] = useState<StudentResult[]>(() =>
+    examService.getResults(currentTenant.id).filter(r => r.studentId === activeChild.id)
+  );
   const childHomework = homeworkService.getAll(currentTenant.id).filter(h => h.classId === activeChild.classId);
   const timetable = timetableService.getAll(currentTenant.id, activeChild.classId);
   const announcements = announcementService.getAll(currentTenant.id).filter(
@@ -121,6 +123,25 @@ export const ParentPortal: React.FC = () => {
 
   // Dynamic D1 Fee Invoices & Attendance state for active child
   const [d1Attendance, setD1Attendance] = useState<StudentAttendanceHistoryResponse | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    async function loadResults() {
+      if (!activeChild?.id) return;
+      try {
+        const exams = await examApiAdapter.getExams(currentTenant.id, undefined, storageMode);
+        const activeExamId = exams[0]?.id || 'exam-mid-2026';
+        const res = await examApiAdapter.getResults(activeExamId, { tenantId: currentTenant.id, studentId: activeChild.id }, storageMode);
+        if (isMounted && res && res.length > 0) {
+          setChildResults(res);
+        }
+      } catch (err) {
+        console.warn('Failed to load child exam results from API:', err);
+      }
+    }
+    loadResults();
+    return () => { isMounted = false; };
+  }, [activeChild?.id, currentTenant.id, storageMode]);
 
   useEffect(() => {
     let isMounted = true;
@@ -920,7 +941,9 @@ export const StudentPortal: React.FC = () => {
   const allStudents = studentService.getAll(currentTenant.id);
   const student = studentService.getById('student-1') || allStudents[0];
 
-  const results = examService.getResults(currentTenant.id, undefined, student.id);
+  const [results, setResults] = useState<StudentResult[]>(() =>
+    examService.getResults(currentTenant.id, undefined, student.id)
+  );
   const homeworkList = homeworkService.getAll(currentTenant.id, student.classId);
   const timetable = timetableService.getAll(currentTenant.id, student.classId);
   const [studentInvoices, setStudentInvoices] = useState<FeeInvoice[]>(() =>
@@ -945,6 +968,25 @@ export const StudentPortal: React.FC = () => {
 
   // Dynamic D1 Attendance & Invoices state for student
   const [d1Attendance, setD1Attendance] = useState<StudentAttendanceHistoryResponse | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    async function loadStudentResults() {
+      if (!student?.id) return;
+      try {
+        const exams = await examApiAdapter.getExams(currentTenant.id, undefined, storageMode);
+        const activeExamId = exams[0]?.id || 'exam-mid-2026';
+        const res = await examApiAdapter.getResults(activeExamId, { tenantId: currentTenant.id, studentId: student.id }, storageMode);
+        if (isMounted && res && res.length > 0) {
+          setResults(res);
+        }
+      } catch (err) {
+        console.warn('Failed to load student exam results from API:', err);
+      }
+    }
+    loadStudentResults();
+    return () => { isMounted = false; };
+  }, [student?.id, currentTenant.id, storageMode]);
 
   useEffect(() => {
     let isMounted = true;

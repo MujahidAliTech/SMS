@@ -24,7 +24,7 @@ import {
 import { Modal } from '../../components/common/Modal';
 import { ConfirmModal } from '../../components/common/ConfirmModal';
 import { ReportCardModal } from '../../components/print/ReportCardModal';
-import { attendanceApiAdapter } from '../../services/dataAdapter';
+import { attendanceApiAdapter, examApiAdapter } from '../../services/dataAdapter';
 import {
   CalendarCheck,
   BookOpen,
@@ -310,8 +310,40 @@ export const TeacherPortal: React.FC = () => {
     return 'F';
   };
 
-  const handleSaveMarks = () => {
+  const handleSaveMarks = async () => {
     const exam = exams.find(e => e.id === selectedExamId);
+
+    if (storageMode === 'cloudflare_d1') {
+      try {
+        const studentMarksPayload = classStudents.map(s => {
+          const marks = marksMap[s.id] !== undefined ? marksMap[s.id] : 75;
+          return {
+            studentId: s.id,
+            teacherRemarks: remarksMap[s.id] || 'Satisfactory academic performance',
+            subjects: [
+              {
+                subjectId: 'sub-phy-9',
+                obtainedMarks: marks,
+                marksStatus: 'present' as const,
+                remarks: remarksMap[s.id] || ''
+              }
+            ]
+          };
+        });
+
+        await examApiAdapter.saveMarks(selectedExamId, {
+          tenantId: currentTenant.id,
+          classId: selectedClass?.id || 'class-9-matric',
+          studentMarks: studentMarksPayload
+        }, storageMode);
+
+        toast(`Marks for ${selectedMarksSubject} (${selectedClass?.name}) saved to Cloudflare D1!`, 'success');
+      } catch (err: any) {
+        toast(err.message || 'Failed to save marks', 'error');
+      }
+      return;
+    }
+
     classStudents.forEach(s => {
       const marks = marksMap[s.id] !== undefined ? marksMap[s.id] : 75;
       examService.saveMarksForStudent({

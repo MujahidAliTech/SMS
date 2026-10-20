@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { examService, studentService, classService, subjectService } from '../../services';
-import { Exam, StudentResult, Student, Subject } from '../../types';
+import { Exam, StudentResult, Student, Subject, SchoolClass } from '../../types';
 import { Modal } from '../../components/common/Modal';
 import { ConfirmModal } from '../../components/common/ConfirmModal';
 import { ReportCardModal } from '../../components/print/ReportCardModal';
+import { examApiAdapter, classApiAdapter, studentApiAdapter } from '../../services/dataAdapter';
 import {
   FileSpreadsheet,
   Plus,
@@ -22,16 +23,20 @@ import {
   Sparkles,
   Percent,
   Check,
-  X
+  X,
+  Send,
+  ShieldCheck,
+  Undo2,
+  History
 } from 'lucide-react';
 
 export const ExamsListPage: React.FC = () => {
-  const { currentTenant, toast } = useApp();
+  const { currentTenant, currentUser, storageMode, toast } = useApp();
   const [exams, setExams] = useState<Exam[]>(() => examService.getExams(currentTenant.id));
   const [results, setResults] = useState<StudentResult[]>(() => examService.getResults(currentTenant.id));
-  const classes = classService.getAll(currentTenant.id);
-  const subjects = subjectService.getAll(currentTenant.id);
-  const students = studentService.getAll(currentTenant.id);
+  const [classes, setClasses] = useState<SchoolClass[]>(() => classService.getAll(currentTenant.id));
+  const [subjects, setSubjects] = useState<Subject[]>(() => subjectService.getAll(currentTenant.id));
+  const [students, setStudents] = useState<Student[]>(() => studentService.getAll(currentTenant.id));
 
   const [activeTab, setActiveTab] = useState<'exams' | 'results'>('exams');
 
@@ -49,6 +54,14 @@ export const ExamsListPage: React.FC = () => {
   const [selectedResultForPrint, setSelectedResultForPrint] = useState<StudentResult | null>(null);
   const [resultToDelete, setResultToDelete] = useState<StudentResult | null>(null);
 
+  // Audited Result Correction modal
+  const [isCorrectionModalOpen, setIsCorrectionModalOpen] = useState(false);
+  const [resultToCorrect, setResultToCorrect] = useState<StudentResult | null>(null);
+  const [correctionSubjectId, setCorrectionSubjectId] = useState<string>('');
+  const [correctionNewMarks, setCorrectionNewMarks] = useState<number>(0);
+  const [correctionReason, setCorrectionReason] = useState<string>('');
+  const [isCorrecting, setIsCorrecting] = useState<boolean>(false);
+
   // New/Edit Exam Form
   const [examForm, setExamForm] = useState({
     title: 'Mid-Term Assessment 2026',
@@ -64,14 +77,44 @@ export const ExamsListPage: React.FC = () => {
   const [marksClassId, setMarksClassId] = useState<string>(classes[0]?.id || '');
   const [marksStudentId, setMarksStudentId] = useState<string>('');
   const [subjectMarksInputs, setSubjectMarksInputs] = useState<Record<string, number>>({});
+  const [subjectMarksStatus, setSubjectMarksStatus] = useState<Record<string, 'present' | 'absent' | 'exempt'>>({});
   const [teacherRemarks, setTeacherRemarks] = useState('');
   const [positionInClass, setPositionInClass] = useState<number | undefined>(undefined);
   const [marksErrors, setMarksErrors] = useState<string[]>([]);
 
-  const refreshList = () => {
+  const refreshList = async () => {
+    if (storageMode === 'cloudflare_d1') {
+      try {
+        const [fetchedExams, fetchedClasses, fetchedSubjects, fetchedStudents] = await Promise.all([
+          examApiAdapter.getExams(currentTenant.id, undefined, storageMode),
+          classApiAdapter.getClasses(currentTenant.id, storageMode),
+          examApiAdapter.getSubjects(currentTenant.id, undefined, storageMode),
+          studentApiAdapter.getStudents(currentTenant.id, {}, storageMode)
+        ]);
+        setExams(fetchedExams);
+        setClasses(fetchedClasses);
+        setSubjects(fetchedSubjects);
+        setStudents(fetchedStudents);
+
+        const activeExamId = fetchedExams[0]?.id || 'exam-mid-2026';
+        const fetchedResults = await examApiAdapter.getResults(activeExamId, { tenantId: currentTenant.id }, storageMode);
+        setResults(fetchedResults);
+        return;
+      } catch (err) {
+        console.warn('Failed to load from Cloudflare D1:', err);
+      }
+    }
+
     setExams(examService.getExams(currentTenant.id));
     setResults(examService.getResults(currentTenant.id));
+    setClasses(classService.getAll(currentTenant.id));
+    setSubjects(subjectService.getAll(currentTenant.id));
+    setStudents(studentService.getAll(currentTenant.id));
   };
+
+  useEffect(() => {
+    refreshList();
+  }, [currentTenant.id, storageMode]);
 
   // Filtered Results
   const filteredResults = results.filter(res => {
@@ -191,19 +234,31 @@ export const ExamsListPage: React.FC = () => {
 
   // Compute live calculations for marks modal
   const targetSubjects = subjects.filter(s => s.classId === marksClassId);
-  const totalMaxMarks = targetSubjects.reduce((sum, s) => sum + s.totalMarks, 0);
-  const totalObtainedMarks = targetSubjects.reduce((sum, s) => {
+  let totalMaxMarks = 0;
+  let totalObtainedMarks = 0;
+  let anySubjectFailed = false;
+
+  targetSubjects.forEach(s => {
+    const status = subjectMarksStatus[s.id] || 'present';
     const val = Number(subjectMarksInputs[s.id]) || 0;
-    return sum + val;
-  }, 0);
-  const livePercentage = totalMaxMarks > 0 ? Math.round((totalObtainedMarks / totalMaxMarks) * 1000) / 10 : 0;
-  const liveGrade = examService.calculateGrade(livePercentage);
-  const anySubjectFailed = targetSubjects.some(s => {
-    const val = Number(subjectMarksInputs[s.id]) || 0;
-    return val < s.passingMarks;
+    if (status === 'absent') {
+      totalMaxMarks += s.totalMarks;
+      anySubjectFailed = true;
+    } else if (status === 'exempt') {
+      // Excluded from both max and obtained
+    } else {
+      totalMaxMarks += s.totalMarks;
+      totalObtainedMarks += val;
+      if (val < s.passingMarks) {
+        anySubjectFailed = true;
+      }
+    }
   });
 
-  const handleSaveMarks = (e: React.FormEvent) => {
+  const livePercentage = totalMaxMarks > 0 ? Math.round((totalObtainedMarks / totalMaxMarks) * 1000) / 10 : 0;
+  const liveGrade = anySubjectFailed ? 'F' : examService.calculateGrade(livePercentage);
+
+  const handleSaveMarks = async (e: React.FormEvent) => {
     e.preventDefault();
     const st = students.find(s => s.id === marksStudentId);
     const ex = exams.find(e => e.id === marksExamId);
@@ -222,18 +277,46 @@ export const ExamsListPage: React.FC = () => {
     // Validation
     const errors: string[] = [];
     targetSubjects.forEach(s => {
-      const val = subjectMarksInputs[s.id];
-      if (val === undefined || isNaN(val)) {
-        errors.push(`Marks for ${s.name} cannot be empty`);
-      } else if (val < 0) {
-        errors.push(`Marks for ${s.name} cannot be negative`);
-      } else if (val > s.totalMarks) {
-        errors.push(`Marks for ${s.name} (${val}) exceed max allowed marks (${s.totalMarks})`);
+      const status = subjectMarksStatus[s.id] || 'present';
+      if (status === 'present') {
+        const val = subjectMarksInputs[s.id];
+        if (val === undefined || isNaN(val)) {
+          errors.push(`Marks for ${s.name} cannot be empty`);
+        } else if (val < 0) {
+          errors.push(`Marks for ${s.name} cannot be negative`);
+        } else if (val > s.totalMarks) {
+          errors.push(`Marks for ${s.name} (${val}) exceed max allowed marks (${s.totalMarks})`);
+        }
       }
     });
 
     if (errors.length > 0) {
       setMarksErrors(errors);
+      return;
+    }
+
+    if (storageMode === 'cloudflare_d1') {
+      try {
+        await examApiAdapter.saveMarks(ex.id, {
+          tenantId: currentTenant.id,
+          classId: cls.id,
+          studentMarks: [{
+            studentId: st.id,
+            teacherRemarks: teacherRemarks.trim() || undefined,
+            subjects: targetSubjects.map(s => ({
+              subjectId: s.id,
+              obtainedMarks: (subjectMarksStatus[s.id] || 'present') === 'present' ? (Number(subjectMarksInputs[s.id]) || 0) : 0,
+              marksStatus: subjectMarksStatus[s.id] || 'present'
+            }))
+          }]
+        }, storageMode);
+        toast(`Marks recorded for ${st.name} in Cloudflare D1`, 'success');
+        refreshList();
+        setIsMarksEntryModalOpen(false);
+        setActiveTab('results');
+      } catch (err: any) {
+        toast(err.message || 'Failed to save marks', 'error');
+      }
       return;
     }
 
@@ -250,8 +333,11 @@ export const ExamsListPage: React.FC = () => {
         subjectId: s.id,
         subjectName: s.name,
         totalMarks: s.totalMarks,
-        obtainedMarks: Number(subjectMarksInputs[s.id]) || 0,
-        passingMarks: s.passingMarks
+        obtainedMarks: (subjectMarksStatus[s.id] || 'present') === 'present' ? (Number(subjectMarksInputs[s.id]) || 0) : 0,
+        passingMarks: s.passingMarks,
+        marksStatus: subjectMarksStatus[s.id] || 'present',
+        isAbsent: subjectMarksStatus[s.id] === 'absent',
+        isExempt: subjectMarksStatus[s.id] === 'exempt'
       })),
       teacherRemarks: teacherRemarks.trim() || undefined
     };
@@ -261,6 +347,88 @@ export const ExamsListPage: React.FC = () => {
     setIsMarksEntryModalOpen(false);
     toast(`Marks entered for ${st.name} (Grade: ${saved.grade}, ${saved.percentage}%)`, 'success');
     setActiveTab('results');
+  };
+
+  const handleSubmitReview = async (examId: string) => {
+    try {
+      if (storageMode === 'cloudflare_d1') {
+        await examApiAdapter.submitResultsForReview(examId, { tenantId: currentTenant.id }, storageMode);
+      }
+      toast('Results submitted for Principal review', 'success');
+      refreshList();
+    } catch (err: any) {
+      toast(err.message || 'Failed to submit results', 'error');
+    }
+  };
+
+  const handleApprove = async (examId: string) => {
+    try {
+      if (storageMode === 'cloudflare_d1') {
+        await examApiAdapter.approveResults(examId, { tenantId: currentTenant.id }, storageMode);
+      }
+      toast('Results approved by Principal', 'success');
+      refreshList();
+    } catch (err: any) {
+      toast(err.message || 'Failed to approve results', 'error');
+    }
+  };
+
+  const handlePublish = async (examId: string) => {
+    try {
+      if (storageMode === 'cloudflare_d1') {
+        await examApiAdapter.publishResults(examId, { tenantId: currentTenant.id }, storageMode);
+      }
+      toast('Official results published to Parents and Students', 'success');
+      refreshList();
+    } catch (err: any) {
+      toast(err.message || 'Failed to publish results', 'error');
+    }
+  };
+
+  const handleUnpublish = async (examId: string) => {
+    try {
+      if (storageMode === 'cloudflare_d1') {
+        await examApiAdapter.unpublishResults(examId, { tenantId: currentTenant.id }, storageMode);
+      }
+      toast('Results unpublished for revision', 'info');
+      refreshList();
+    } catch (err: any) {
+      toast(err.message || 'Failed to unpublish results', 'error');
+    }
+  };
+
+  const handleOpenCorrection = (res: StudentResult) => {
+    setResultToCorrect(res);
+    setCorrectionSubjectId(res.subjectsMarks[0]?.subjectId || '');
+    setCorrectionNewMarks(res.subjectsMarks[0]?.obtainedMarks || 0);
+    setCorrectionReason('');
+    setIsCorrectionModalOpen(true);
+  };
+
+  const handleSaveCorrection = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!resultToCorrect || !correctionReason.trim() || correctionReason.trim().length < 5) {
+      toast('A valid justification reason (at least 5 characters) is mandatory', 'error');
+      return;
+    }
+    setIsCorrecting(true);
+    try {
+      if (storageMode === 'cloudflare_d1') {
+        await examApiAdapter.correctResult(resultToCorrect.examId, resultToCorrect.id, {
+          tenantId: currentTenant.id,
+          subjectId: correctionSubjectId,
+          newObtainedMarks: Number(correctionNewMarks),
+          reason: correctionReason.trim()
+        }, storageMode);
+      }
+      toast('Audited result correction applied successfully', 'success');
+      setIsCorrectionModalOpen(false);
+      refreshList();
+    } catch (err: any) {
+      toast(err.message || 'Failed to correct result marks', 'error');
+    } finally {
+      setIsCorrecting(false);
+    }
   };
 
   const handleConfirmDeleteResult = () => {
@@ -323,15 +491,24 @@ export const ExamsListPage: React.FC = () => {
             <div key={exam.id} className="bg-white border border-slate-200/80 rounded-xl p-5 shadow-xs flex flex-col justify-between hover:border-slate-300 transition">
               <div>
                 <div className="flex items-center justify-between mb-3">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-blue-700 bg-blue-50 px-2.5 py-0.5 rounded-full border border-blue-200">
-                    {exam.term}
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                      exam.status === 'announced' ? 'bg-emerald-100 text-emerald-800' : 'bg-purple-100 text-purple-800'
-                    }`}>
-                      {exam.status}
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-blue-700 bg-blue-50 px-2.5 py-0.5 rounded-full border border-blue-200">
+                      {exam.term}
                     </span>
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase border ${
+                      exam.publicationStatus === 'published'
+                        ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                        : exam.publicationStatus === 'approved'
+                        ? 'bg-purple-50 text-purple-800 border-purple-200'
+                        : exam.publicationStatus === 'submitted'
+                        ? 'bg-blue-50 text-blue-800 border-blue-200'
+                        : 'bg-amber-50 text-amber-800 border-amber-200'
+                    }`}>
+                      {exam.publicationStatus || 'draft'}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
                     <button
                       onClick={() => handleOpenEditExam(exam)}
                       title="Edit Exam"
@@ -352,21 +529,66 @@ export const ExamsListPage: React.FC = () => {
                 <h3 className="font-bold text-slate-900 text-base">{exam.title}</h3>
                 <p className="text-xs text-slate-500 mt-1">Academic Session: {exam.session}</p>
 
-                <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-600">
+                <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between text-xs text-slate-600">
                   <div className="flex items-center gap-1.5">
                     <Calendar className="w-3.5 h-3.5 text-slate-400" />
                     <span>Dates: {exam.startDate} to {exam.endDate}</span>
                   </div>
                 </div>
+
+                {/* Workflow Actions Bar */}
+                {(currentUser?.role === 'principal' || currentUser?.role === 'school_admin' || currentUser?.role === 'super_admin' || currentUser?.role === 'teacher') && (
+                  <div className="mt-3 pt-2.5 border-t border-slate-100 flex flex-wrap items-center gap-1.5">
+                    {(!exam.publicationStatus || exam.publicationStatus === 'draft') && (
+                      <button
+                        onClick={() => handleSubmitReview(exam.id)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded text-xs font-semibold transition"
+                      >
+                        <Send className="w-3 h-3 text-amber-700" />
+                        <span>Submit for Review</span>
+                      </button>
+                    )}
+
+                    {(currentUser?.role === 'principal' || currentUser?.role === 'school_admin' || currentUser?.role === 'super_admin') && exam.publicationStatus === 'submitted' && (
+                      <button
+                        onClick={() => handleApprove(exam.id)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 bg-purple-50 hover:bg-purple-100 text-purple-800 border border-purple-200 rounded text-xs font-bold transition"
+                      >
+                        <ShieldCheck className="w-3 h-3 text-purple-700" />
+                        <span>Approve Results</span>
+                      </button>
+                    )}
+
+                    {(currentUser?.role === 'principal' || currentUser?.role === 'school_admin' || currentUser?.role === 'super_admin') && exam.publicationStatus === 'approved' && (
+                      <button
+                        onClick={() => handlePublish(exam.id)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-700 hover:bg-emerald-800 text-white rounded text-xs font-bold transition shadow-xs"
+                      >
+                        <CheckCircle2 className="w-3 h-3" />
+                        <span>Publish to Parents & Students</span>
+                      </button>
+                    )}
+
+                    {(currentUser?.role === 'principal' || currentUser?.role === 'school_admin' || currentUser?.role === 'super_admin') && exam.publicationStatus === 'published' && (
+                      <button
+                        onClick={() => handleUnpublish(exam.id)}
+                        className="inline-flex items-center gap-1 px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded text-[11px] font-medium transition"
+                      >
+                        <Undo2 className="w-3 h-3" />
+                        <span>Unpublish</span>
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
 
-              <div className="mt-5 pt-3 border-t border-slate-100 flex justify-between items-center">
+              <div className="mt-4 pt-3 border-t border-slate-100 flex justify-between items-center">
                 <button
                   onClick={() => handleOpenMarksEntry(exam.id)}
                   className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 hover:text-emerald-900"
                 >
                   <Percent className="w-3.5 h-3.5" />
-                  <span>Enter Marks for this Exam</span>
+                  <span>Enter Marks</span>
                 </button>
                 <button
                   onClick={() => {
@@ -447,14 +669,15 @@ export const ExamsListPage: React.FC = () => {
                     <th className="py-3 px-3">Marks Obtained</th>
                     <th className="py-3 px-3">Percentage</th>
                     <th className="py-3 px-3">Grade</th>
-                    <th className="py-3 px-3">Status</th>
+                    <th className="py-3 px-3">Pass/Fail</th>
+                    <th className="py-3 px-3">Publication</th>
                     <th className="py-3 px-4 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {filteredResults.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="py-10 text-center text-slate-400">
+                      <td colSpan={9} className="py-10 text-center text-slate-400">
                         <Award className="w-8 h-8 text-slate-300 mx-auto mb-2" />
                         <p className="font-semibold text-slate-600">No results recorded yet</p>
                         <p className="text-[11px] mt-0.5">Click "Enter Student Marks" to record marks for any student.</p>
@@ -495,8 +718,21 @@ export const ExamsListPage: React.FC = () => {
                             {res.status}
                           </span>
                         </td>
+                        <td className="py-3 px-3">
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase border ${
+                            res.publicationStatus === 'published'
+                              ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                              : res.publicationStatus === 'approved'
+                              ? 'bg-purple-50 text-purple-800 border-purple-200'
+                              : res.publicationStatus === 'submitted'
+                              ? 'bg-blue-50 text-blue-800 border-blue-200'
+                              : 'bg-amber-50 text-amber-800 border-amber-200'
+                          }`}>
+                            {res.publicationStatus || 'draft'}
+                          </span>
+                        </td>
                         <td className="py-3 px-4 text-right">
-                          <div className="flex items-center justify-end gap-1.5">
+                          <div className="flex items-center justify-end gap-1.5 flex-wrap">
                             <button
                               onClick={() => setSelectedResultForPrint(res)}
                               className="inline-flex items-center gap-1 px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-800 font-semibold rounded text-xs transition"
@@ -504,6 +740,16 @@ export const ExamsListPage: React.FC = () => {
                               <Printer className="w-3.5 h-3.5 text-blue-700" />
                               <span>Report Card</span>
                             </button>
+                            {(currentUser?.role === 'principal' || currentUser?.role === 'school_admin' || currentUser?.role === 'super_admin') && (
+                              <button
+                                onClick={() => handleOpenCorrection(res)}
+                                title="Audited Result Correction"
+                                className="inline-flex items-center gap-1 px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 font-semibold rounded text-xs transition border border-amber-200"
+                              >
+                                <History className="w-3.5 h-3.5 text-amber-700" />
+                                <span>Correct</span>
+                              </button>
+                            )}
                             <button
                               onClick={() => setResultToDelete(res)}
                               title="Delete Result"
