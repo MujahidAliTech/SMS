@@ -35,8 +35,17 @@ CREATE TABLE IF NOT EXISTS fee_structures (
 CREATE INDEX IF NOT EXISTS idx_fee_structures_tenant ON fee_structures(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_fee_structures_class ON fee_structures(tenant_id, class_id);
 
--- 3. Extend Fee Invoices if columns not present
--- Note: SQLite allows adding columns via ALTER TABLE
+-- 3. Extend Fee Invoices and Payments with financial audit and reversal columns
+ALTER TABLE fee_invoices ADD COLUMN concession_type TEXT;
+ALTER TABLE fee_invoices ADD COLUMN concession_reason TEXT;
+ALTER TABLE fee_invoices ADD COLUMN concession_approved_by TEXT;
+ALTER TABLE fee_invoices ADD COLUMN fee_items_json TEXT DEFAULT '[]';
+ALTER TABLE fee_invoices ADD COLUMN academic_session TEXT DEFAULT '2026-2027';
+
+ALTER TABLE fee_payments ADD COLUMN reversal_id TEXT;
+ALTER TABLE fee_payments ADD COLUMN idempotency_key TEXT;
+ALTER TABLE fee_payments ADD COLUMN is_reversed INTEGER NOT NULL DEFAULT 0;
+
 -- Unique constraint preventing duplicate invoices per student and month
 CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_tenant_student_month ON fee_invoices(tenant_id, student_id, fee_month);
 

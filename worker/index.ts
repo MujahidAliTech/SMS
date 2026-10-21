@@ -113,8 +113,11 @@ export default {
     const path = url.pathname;
     const method = request.method;
 
-    // 2. Only intercept /api/* routes
+    // 2. Route non-API requests to static assets if reached
     if (!path.startsWith('/api/')) {
+      if (env.ASSETS) {
+        return await env.ASSETS.fetch(request);
+      }
       return new Response('Not Found', { status: 404 });
     }
 

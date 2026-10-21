@@ -49,9 +49,14 @@ export interface R2Bucket {
   delete(key: string | string[]): Promise<void>;
 }
 
+export interface Fetcher {
+  fetch(request: Request | string, init?: RequestInit): Promise<Response>;
+}
+
 export interface Env {
   DB: D1Database;
   STORAGE?: R2Bucket;
+  ASSETS?: Fetcher;
   ENVIRONMENT?: string;
   API_VERSION?: string;
   APP_NAME?: string;

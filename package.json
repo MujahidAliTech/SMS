@@ -8,8 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "lint": "tsc --noEmit",
-    "db:migrate:local": "wrangler d1 migrations apply taleemcloud-db --local",
-    "db:migrate:prod": "wrangler d1 migrations apply taleemcloud-db --remote",
+    "db:migrate:local": "wrangler d1 migrations apply sms-db --local",
+    "db:migrate:prod": "wrangler d1 migrations apply sms-db --remote",
     "predeploy": "npm run build",
     "deploy": "gh-pages -d dist"
   },
